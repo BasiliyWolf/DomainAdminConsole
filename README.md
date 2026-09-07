@@ -1,4 +1,4 @@
-# Domain Admin Console 0.3.0
+# Domain Admin Console 0.3.1
 
 WinForms-приложение на C# для централизованного удалённого администрирования Windows-компьютеров в Active Directory.
 

@@ -105,7 +105,7 @@ if($q){
 }
 ($users | Where-Object {$_} | Sort-Object -Unique) -join ', '
 ";
-                        computer.Users = (await RemotePowerShellService.ExecuteOneShotTextAsync(host, usersScript, 3500, null, cancellationToken)).Trim();
+                        computer.Users = (await RemotePowerShellService.ExecuteOneShotTextAsync(host, usersScript, 8000, null, cancellationToken)).Trim();
                     }
                     catch { }
                 }

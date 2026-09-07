@@ -52,7 +52,7 @@ public sealed partial class MainForm : Form
 
     public MainForm()
     {
-        Text = "Domain Admin Console 0.3.0";
+        Text = "Domain Admin Console 0.3.1";
         Width = 1500;
         Height = 900;
         MinimumSize = new Size(1100, 650);
