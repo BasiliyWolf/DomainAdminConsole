@@ -14,9 +14,9 @@
     <Product>Domain Admin Console</Product>
     <Description>Windows domain administration console</Description>
     <Copyright>Copyright © 2026 BasiliyWolf</Copyright>
-    <Version>0.3.8</Version>
-    <FileVersion>0.3.8.0</FileVersion>
-    <AssemblyVersion>0.3.8.0</AssemblyVersion>
+    <Version>0.3.9</Version>
+    <FileVersion>0.3.9.0</FileVersion>
+    <AssemblyVersion>0.3.9.0</AssemblyVersion>
   </PropertyGroup>
 
 <ItemGroup>

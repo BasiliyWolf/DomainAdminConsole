@@ -138,27 +138,45 @@ public sealed partial class MainForm
 
     private TabPage BuildBulkTab()
     {
-        var tab = new TabPage("Массовые действия");
+        var tab = new TabPage("Массовые действия") { Padding = new Padding(6) };
         var split = CreateSafeSplitContainer(Orientation.Horizontal, desiredDistance: 430);
-        var top = new Panel { Dock = DockStyle.Fill };
-        var bar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 110, Padding = new Padding(4), WrapContents = true };
-        bar.Controls.Add(Button("Активные ПК", (_, _) => LoadBulkTargets(true), 105));
-        bar.Controls.Add(Button("Все ПК AD", (_, _) => LoadBulkTargets(false), 100));
-        bar.Controls.Add(new Label { Text = "Группа:", AutoSize = true, Padding = new Padding(5, 7, 0, 0) });
-        bar.Controls.Add(_bulkFavoriteGroup);
-        bar.Controls.Add(Button("Загрузить группу", (_, _) => LoadBulkFavoriteGroup(), 120));
-        bar.Controls.Add(Button("Отметить все", (_, _) => SetAllBulkTargets(true), 105));
-        bar.Controls.Add(Button("Снять все", (_, _) => SetAllBulkTargets(false), 95));
-        bar.Controls.Add(new Label { Text = "Параллельно:", AutoSize = true, Padding = new Padding(8, 7, 0, 0) });
-        bar.Controls.Add(_bulkConcurrency);
-        bar.Controls.Add(_bulkAction);
-        bar.Controls.Add(_bulkCustomScript);
-        bar.Controls.Add(Button("Выполнить", async (_, _) => await RunBulkActionAsync(), 100));
-        bar.Controls.Add(Button("Стоп", (_, _) => _bulkCts?.Cancel(), 70));
-        bar.Controls.Add(_bulkStatus);
-        MirrorToolbarToGridContextMenu(_bulkTargetsGrid, bar);
-        top.Controls.Add(_bulkTargetsGrid);
-        top.Controls.Add(bar);
+        var top = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 3,
+            Padding = new Padding(0),
+            Margin = new Padding(0)
+        };
+        top.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+        top.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+        top.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        var targetBar = new FlowLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(2), WrapContents = false, Margin = new Padding(0) };
+        targetBar.Controls.Add(Button("Активные ПК", (_, _) => LoadBulkTargets(true), 110));
+        targetBar.Controls.Add(Button("Все ПК AD", (_, _) => LoadBulkTargets(false), 105));
+        targetBar.Controls.Add(new Label { Text = "Группа:", AutoSize = true, Padding = new Padding(8, 8, 0, 0) });
+        targetBar.Controls.Add(_bulkFavoriteGroup);
+        targetBar.Controls.Add(Button("Загрузить группу", (_, _) => LoadBulkFavoriteGroup(), 130));
+        targetBar.Controls.Add(Button("Отметить все", (_, _) => SetAllBulkTargets(true), 110));
+        targetBar.Controls.Add(Button("Снять все", (_, _) => SetAllBulkTargets(false), 100));
+
+        var actionBar = new FlowLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(2), WrapContents = false, Margin = new Padding(0) };
+        actionBar.Controls.Add(new Label { Text = "Параллельно:", AutoSize = true, Padding = new Padding(0, 8, 0, 0) });
+        actionBar.Controls.Add(_bulkConcurrency);
+        actionBar.Controls.Add(new Label { Text = "Действие:", AutoSize = true, Padding = new Padding(8, 8, 0, 0) });
+        actionBar.Controls.Add(_bulkAction);
+        _bulkCustomScript.Width = 420;
+        actionBar.Controls.Add(_bulkCustomScript);
+        actionBar.Controls.Add(Button("Выполнить", async (_, _) => await RunBulkActionAsync(), 105));
+        actionBar.Controls.Add(Button("Стоп", (_, _) => _bulkCts?.Cancel(), 75));
+        actionBar.Controls.Add(_bulkStatus);
+
+        MirrorToolbarToGridContextMenu(_bulkTargetsGrid, targetBar);
+        MirrorAdditionalToolbarButtonsToGridContextMenu(_bulkTargetsGrid, actionBar);
+        top.Controls.Add(targetBar, 0, 0);
+        top.Controls.Add(actionBar, 0, 1);
+        top.Controls.Add(_bulkTargetsGrid, 0, 2);
         split.Panel1.Controls.Add(top);
         split.Panel2.Controls.Add(_bulkResultsGrid);
         tab.Controls.Add(split);
@@ -167,20 +185,44 @@ public sealed partial class MainForm
 
     private TabPage BuildWakeOnLanTab()
     {
-        var tab = new TabPage("Wake-on-LAN");
-        var bar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 80, Padding = new Padding(6), WrapContents = true };
-        bar.Controls.Add(new Label { Text = "MAC:", AutoSize = true, Padding = new Padding(0, 7, 0, 0) });
+        var tab = new TabPage("Wake-on-LAN") { Padding = new Padding(6) };
+        var root = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 3,
+            Padding = new Padding(0),
+            Margin = new Padding(0)
+        };
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        var bar = new FlowLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(2), WrapContents = false, Margin = new Padding(0) };
+        bar.Controls.Add(new Label { Text = "MAC:", AutoSize = true, Padding = new Padding(0, 8, 0, 0) });
         bar.Controls.Add(_wolMac);
-        bar.Controls.Add(new Label { Text = "Broadcast:", AutoSize = true, Padding = new Padding(5, 7, 0, 0) });
+        bar.Controls.Add(new Label { Text = "Broadcast:", AutoSize = true, Padding = new Padding(8, 8, 0, 0) });
         bar.Controls.Add(_wolBroadcast);
-        bar.Controls.Add(new Label { Text = "UDP:", AutoSize = true, Padding = new Padding(5, 7, 0, 0) });
+        bar.Controls.Add(new Label { Text = "UDP:", AutoSize = true, Padding = new Padding(8, 8, 0, 0) });
         bar.Controls.Add(_wolPort);
-        bar.Controls.Add(Button("Отправить Magic Packet", async (_, _) => await SendWakeOnLanAsync(), 165));
-        bar.Controls.Add(Button("Обновить список", (_, _) => ReloadKnownMacs(), 125));
-        bar.Controls.Add(new Label { Text = "MAC-адреса сохраняются при просмотре сетевых интерфейсов доступных ПК.", AutoSize = true, Padding = new Padding(8, 7, 0, 0) });
+        bar.Controls.Add(Button("Отправить Magic Packet", async (_, _) => await SendWakeOnLanAsync(), 175));
+        bar.Controls.Add(Button("Обновить", (_, _) => ReloadKnownMacs(), 110));
+
+        var note = new Label
+        {
+            Text = "MAC-адреса сохраняются автоматически при просмотре сетевых интерфейсов доступных ПК.",
+            Dock = DockStyle.Fill,
+            AutoEllipsis = true,
+            ForeColor = SystemColors.GrayText,
+            TextAlign = ContentAlignment.MiddleLeft,
+            Padding = new Padding(3, 0, 0, 0),
+            Margin = new Padding(0)
+        };
         MirrorToolbarToGridContextMenu(_wolGrid, bar);
-        tab.Controls.Add(_wolGrid);
-        tab.Controls.Add(bar);
+        root.Controls.Add(bar, 0, 0);
+        root.Controls.Add(note, 0, 1);
+        root.Controls.Add(_wolGrid, 0, 2);
+        tab.Controls.Add(root);
         return tab;
     }
 

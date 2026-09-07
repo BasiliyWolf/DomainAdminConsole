@@ -260,9 +260,9 @@ public sealed partial class MainForm
         var menu = _domainGrid.ContextMenuStrip ?? CreateGridContextMenu(_domainGrid);
 
         var refreshDomainItem = new ToolStripMenuItem("Обновить домен", GetSystemActionImage("Обновить"));
-        refreshDomainItem.Click += (_, _) => _refreshDomain.PerformClick();
+        refreshDomainItem.Click += async (_, _) => await LoadDomainAsync();
         var stopDomainItem = new ToolStripMenuItem("Стоп", GetSystemActionImage("Стоп"));
-        stopDomainItem.Click += (_, _) => _cancelDomainScan.PerformClick();
+        stopDomainItem.Click += (_, _) => _domainScanCts?.Cancel();
 
         var connectItem = new ToolStripMenuItem("Подключиться", GetSystemActionImage("Подключиться"));
         connectItem.Click += async (_, _) =>

@@ -1,3 +1,11 @@
+## 0.3.9
+
+- Single-line custom tab navigation with left/right scrolling.
+- Direct connect moved to the application menu.
+- Overview, Utilities, Bulk Actions and Wake-on-LAN UI cleanup.
+- Consistent toolbar/input spacing and stable button icon alignment.
+- "Only active" filter moved below the domain computer list.
+
 # Changelog
 
 ## 0.3.8

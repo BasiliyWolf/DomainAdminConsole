@@ -1,68 +1,40 @@
-using System.Runtime.InteropServices;
-
 namespace DomainAdminConsole.Controls;
 
 /// <summary>
-/// Keeps TabControl headers on one line. The native up/down scroller is hidden
-/// because the application exposes dedicated previous/next buttons on the left
-/// and right edges of the tab strip.
+/// TabControl used only as a page host. The application draws its own
+/// single-line tab strip above the control so the tab headers can be scrolled
+/// with dedicated left/right buttons without reserving vertical side gutters.
 /// </summary>
 internal sealed class SingleLineTabControl : TabControl
 {
-    private const int SwHide = 0;
+    private const int TcmAdjustRect = 0x1328;
+
+    public bool HideHeaders { get; set; } = true;
 
     public SingleLineTabControl()
     {
         Multiline = false;
-        SizeMode = TabSizeMode.Normal;
-        HotTrack = true;
-        ShowToolTips = true;
-        Padding = new Point(10, 4);
+        HotTrack = false;
+        ShowToolTips = false;
+        Appearance = TabAppearance.FlatButtons;
+        SizeMode = TabSizeMode.Fixed;
+        ItemSize = new Size(1, 1);
+        Padding = new Point(0, 0);
     }
 
-    protected override void OnHandleCreated(EventArgs e)
-    {
-        base.OnHandleCreated(e);
-        HideNativeScrollerDeferred();
-    }
+    public override Rectangle DisplayRectangle
+        => HideHeaders ? ClientRectangle : base.DisplayRectangle;
 
-    protected override void OnSizeChanged(EventArgs e)
+    protected override void WndProc(ref Message m)
     {
-        base.OnSizeChanged(e);
-        HideNativeScrollerDeferred();
-    }
-
-    protected override void OnSelectedIndexChanged(EventArgs e)
-    {
-        base.OnSelectedIndexChanged(e);
-        HideNativeScrollerDeferred();
-    }
-
-    private void HideNativeScrollerDeferred()
-    {
-        if (!IsHandleCreated || IsDisposed) return;
-        try
+        // Common WinForms technique for a tabless page host. The header row is
+        // rendered by MainForm while TabControl keeps all normal page semantics.
+        if (HideHeaders && m.Msg == TcmAdjustRect && !DesignMode)
         {
-            BeginInvoke(new Action(HideNativeScroller));
+            m.Result = (IntPtr)1;
+            return;
         }
-        catch
-        {
-            // Control may be disposing during shutdown.
-        }
+
+        base.WndProc(ref m);
     }
-
-    private void HideNativeScroller()
-    {
-        if (!IsHandleCreated || IsDisposed) return;
-        var child = FindWindowEx(Handle, IntPtr.Zero, "msctls_updown32", null);
-        if (child != IntPtr.Zero)
-            ShowWindow(child, SwHide);
-    }
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    private static extern IntPtr FindWindowEx(IntPtr parent, IntPtr childAfter, string? className, string? windowName);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 }

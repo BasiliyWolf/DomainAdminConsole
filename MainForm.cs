@@ -43,21 +43,41 @@ public sealed partial class MainForm : Form
     private readonly SingleLineTabControl _tabs = new()
     {
         Dock = DockStyle.Fill,
-        Appearance = TabAppearance.Normal
+        HideHeaders = true
+    };
+    private readonly FlowLayoutPanel _tabHeaderFlow = new()
+    {
+        Dock = DockStyle.Fill,
+        FlowDirection = FlowDirection.LeftToRight,
+        WrapContents = false,
+        AutoScroll = false,
+        Margin = new Padding(0),
+        Padding = new Padding(0)
     };
     private readonly Button _tabScrollLeft = new()
     {
-        Text = "◀", Width = 28, Height = 24, TabStop = false, FlatStyle = FlatStyle.System,
-        AccessibleName = "Предыдущая вкладка"
+        Text = "◀", Width = 30, Height = 28, TabStop = false, FlatStyle = FlatStyle.System,
+        Margin = new Padding(0), AccessibleName = "Прокрутить вкладки влево"
     };
     private readonly Button _tabScrollRight = new()
     {
-        Text = "▶", Width = 28, Height = 24, TabStop = false, FlatStyle = FlatStyle.System,
-        AccessibleName = "Следующая вкладка"
+        Text = "▶", Width = 30, Height = 28, TabStop = false, FlatStyle = FlatStyle.System,
+        Margin = new Padding(0), AccessibleName = "Прокрутить вкладки вправо"
     };
+    private int _firstVisibleTabIndex;
+    private int _lastVisibleTabIndex = -1;
     private readonly ToolStripMenuItem _favoritesMenu = new("Избранное");
     private readonly DataGridView _diskGrid = Grid();
-    private readonly RichTextBox _systemInfo = new() { Dock = DockStyle.Fill, ReadOnly = true, Font = new Font("Consolas", 10) };
+    private readonly RichTextBox _systemInfo = new()
+    {
+        Dock = DockStyle.Fill, ReadOnly = true, BorderStyle = BorderStyle.None,
+        BackColor = SystemColors.Window, Font = new Font("Consolas", 10)
+    };
+    private readonly Label _overviewComputer = OverviewValueLabel();
+    private readonly Label _overviewUser = OverviewValueLabel();
+    private readonly Label _overviewOs = OverviewValueLabel();
+    private readonly Label _overviewIp = OverviewValueLabel();
+    private readonly Label _overviewUptime = OverviewValueLabel();
     private readonly RichTextBox _psOutput = new() { Dock = DockStyle.Fill, ReadOnly = true, BackColor = Color.FromArgb(20, 20, 20), ForeColor = Color.Gainsboro, Font = new Font("Consolas", 10) };
     private readonly TextBox _psInput = new() { Dock = DockStyle.Fill, Font = new Font("Consolas", 10) };
     private readonly DataGridView _processGrid = Grid();
@@ -83,7 +103,7 @@ public sealed partial class MainForm : Form
 
     public MainForm()
     {
-        Text = "Domain Admin Console 0.3.7 — BasiliyWolf";
+        Text = "Domain Admin Console 0.3.9 — BasiliyWolf";
         Width = 1500;
         Height = 900;
         WindowState = FormWindowState.Maximized;
@@ -104,6 +124,7 @@ public sealed partial class MainForm : Form
             WindowState = FormWindowState.Maximized;
             _tabs.Visible = true;
             _tabs.BringToFront();
+            RebuildTabHeaderStrip();
             _ = CheckForUpdatesAsync(showNoUpdateMessage: false);
             await LoadDomainAsync();
         };
@@ -120,23 +141,6 @@ public sealed partial class MainForm : Form
 
     private void BuildUi()
     {
-        var top = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Top,
-            Height = 44,
-            Padding = new Padding(8, 7, 8, 4),
-            WrapContents = false
-        };
-        top.Controls.Add(new Label { Text = "ПК:", AutoSize = true, Padding = new Padding(0, 7, 0, 0) });
-        top.Controls.Add(_target);
-        top.Controls.Add(_connect);
-        top.Controls.Add(_refreshConnected);
-        ApplySystemButtonIcon(_connect);
-        ApplySystemButtonIcon(_refreshConnected);
-        ApplySystemButtonIcon(_refreshDomain);
-        ApplySystemButtonIcon(_cancelDomainScan);
-        ApplySystemButtonIcon(_cancelUserSearch);
-
         var split = CreateSafeSplitContainer(
             Orientation.Vertical,
             desiredDistance: 390,
@@ -178,35 +182,32 @@ public sealed partial class MainForm : Form
         ConfigureMainMenu();
         ConfigureStatusStrip();
 
-        // Explicit row layout guarantees that the application menu is always
-        // the topmost row, followed by the connection toolbar, workspace and status bar.
+        // The rarely used direct-connect toolbar was removed from the workspace.
+        // Normal work starts from the AD computer list; direct connection remains
+        // available from the "Подключение" menu.
         var root = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 4,
+            RowCount = 3,
             Margin = new Padding(0),
             Padding = new Padding(0)
         };
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
         _mainMenu.Dock = DockStyle.Fill;
         _mainMenu.Margin = new Padding(0);
-        top.Dock = DockStyle.Fill;
-        top.Margin = new Padding(0);
         split.Dock = DockStyle.Fill;
         split.Margin = new Padding(0);
         _statusStrip.Dock = DockStyle.Fill;
         _statusStrip.Margin = new Padding(0);
 
         root.Controls.Add(_mainMenu, 0, 0);
-        root.Controls.Add(top, 0, 1);
-        root.Controls.Add(split, 0, 2);
-        root.Controls.Add(_statusStrip, 0, 3);
+        root.Controls.Add(split, 0, 1);
+        root.Controls.Add(_statusStrip, 0, 2);
 
         Controls.Clear();
         Controls.Add(root);
@@ -214,6 +215,7 @@ public sealed partial class MainForm : Form
 
         _tabs.Visible = true;
         _tabs.BringToFront();
+        NormalizeFlowLayoutControls(this);
     }
 
     private Control BuildWorkspacePanel()
@@ -222,27 +224,40 @@ public sealed partial class MainForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 3,
-            RowCount = 1,
+            RowCount = 2,
+            Margin = new Padding(0),
+            Padding = new Padding(0),
+            BackColor = SystemColors.Control
+        };
+        host.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 32));
+        host.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        host.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 32));
+        host.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+        host.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        _tabScrollLeft.Dock = DockStyle.Fill;
+        _tabScrollRight.Dock = DockStyle.Fill;
+        _tabScrollLeft.Click += (_, _) => ScrollTabHeaders(-1);
+        _tabScrollRight.Click += (_, _) => ScrollTabHeaders(+1);
+
+        _tabHeaderFlow.BackColor = SystemColors.Control;
+        _tabHeaderFlow.SizeChanged += (_, _) => RebuildTabHeaderStrip();
+
+        host.Controls.Add(_tabScrollLeft, 0, 0);
+        host.Controls.Add(_tabHeaderFlow, 1, 0);
+        host.Controls.Add(_tabScrollRight, 2, 0);
+        host.Controls.Add(_tabs, 0, 1);
+        host.SetColumnSpan(_tabs, 3);
+
+        var center = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 3,
+            RowCount = 3,
+            BackColor = Color.FromArgb(245, 247, 250),
             Margin = new Padding(0),
             Padding = new Padding(0)
         };
-        host.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 30));
-        host.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        host.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 30));
-        host.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-
-        var leftHost = new Panel { Dock = DockStyle.Fill, Padding = new Padding(2, 2, 0, 0) };
-        var rightHost = new Panel { Dock = DockStyle.Fill, Padding = new Padding(0, 2, 2, 0) };
-        _tabScrollLeft.Anchor = AnchorStyles.Top | AnchorStyles.Left;
-        _tabScrollRight.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        _tabScrollLeft.Location = new Point(1, 2);
-        _tabScrollRight.Location = new Point(1, 2);
-        _tabScrollLeft.Click += (_, _) => SelectRelativeTab(-1);
-        _tabScrollRight.Click += (_, _) => SelectRelativeTab(+1);
-        leftHost.Controls.Add(_tabScrollLeft);
-        rightHost.Controls.Add(_tabScrollRight);
-
-        var center = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 3, BackColor = SystemColors.ControlLightLight };
         center.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         center.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         center.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
@@ -250,7 +265,11 @@ public sealed partial class MainForm : Form
         center.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         center.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
 
-        var card = new TableLayoutPanel { AutoSize = true, ColumnCount = 1, RowCount = 2, Padding = new Padding(22), BackColor = SystemColors.Window };
+        var card = new TableLayoutPanel
+        {
+            AutoSize = true, ColumnCount = 1, RowCount = 2,
+            Padding = new Padding(22), BackColor = SystemColors.Window
+        };
         _busyOverlayLabel.Anchor = AnchorStyles.None;
         _busyOverlayProgress.Anchor = AnchorStyles.None;
         card.Controls.Add(_busyOverlayLabel, 0, 0);
@@ -258,12 +277,84 @@ public sealed partial class MainForm : Form
         center.Controls.Add(card, 1, 1);
         _busyOverlay.Controls.Add(center);
 
-        host.Controls.Add(leftHost, 0, 0);
-        host.Controls.Add(_tabs, 1, 0);
-        host.Controls.Add(rightHost, 2, 0);
-        _tabs.Visible = true;
-        _tabs.BringToFront();
+        host.HandleCreated += (_, _) => BeginInvoke(new Action(RebuildTabHeaderStrip));
         return host;
+    }
+
+    private void ScrollTabHeaders(int direction)
+    {
+        if (_tabs.TabPages.Count == 0) return;
+        var maxFirst = Math.Max(0, _tabs.TabPages.Count - 1);
+        _firstVisibleTabIndex = Math.Clamp(_firstVisibleTabIndex + direction, 0, maxFirst);
+        RebuildTabHeaderStrip();
+    }
+
+    private void EnsureSelectedTabHeaderVisible()
+    {
+        var selected = _tabs.SelectedIndex;
+        if (selected < 0) return;
+        if (selected < _firstVisibleTabIndex || selected > _lastVisibleTabIndex)
+            _firstVisibleTabIndex = selected;
+        RebuildTabHeaderStrip();
+    }
+
+    private void RebuildTabHeaderStrip()
+    {
+        if (_tabHeaderFlow.IsDisposed || _tabs.TabPages.Count == 0) return;
+
+        _tabHeaderFlow.SuspendLayout();
+        try
+        {
+            foreach (Control oldButton in _tabHeaderFlow.Controls.Cast<Control>().ToArray())
+                oldButton.Dispose();
+            _tabHeaderFlow.Controls.Clear();
+            var available = Math.Max(120, _tabHeaderFlow.ClientSize.Width - 2);
+            var used = 0;
+            var last = _firstVisibleTabIndex - 1;
+
+            for (var i = _firstVisibleTabIndex; i < _tabs.TabPages.Count; i++)
+            {
+                var page = _tabs.TabPages[i];
+                var measured = TextRenderer.MeasureText(page.Text, Font).Width + 24;
+                var width = Math.Clamp(measured, 72, 190);
+                if (used > 0 && used + width > available) break;
+
+                var tabButton = new Button
+                {
+                    Text = page.Text,
+                    Width = width,
+                    Height = 29,
+                    Margin = new Padding(0),
+                    Padding = new Padding(6, 0, 6, 0),
+                    FlatStyle = FlatStyle.Flat,
+                    TabStop = false,
+                    TextAlign = ContentAlignment.MiddleCenter,
+                    BackColor = ReferenceEquals(page, _tabs.SelectedTab) ? SystemColors.Window : SystemColors.Control,
+                    ForeColor = SystemColors.ControlText,
+                    Tag = page
+                };
+                tabButton.FlatAppearance.BorderSize = 1;
+                tabButton.FlatAppearance.BorderColor = ReferenceEquals(page, _tabs.SelectedTab)
+                    ? Color.FromArgb(0, 120, 215)
+                    : SystemColors.ControlDark;
+                tabButton.Click += (_, _) =>
+                {
+                    _tabs.SelectedTab = page;
+                    _tabs.Focus();
+                };
+                _tabHeaderFlow.Controls.Add(tabButton);
+                used += width;
+                last = i;
+            }
+
+            _lastVisibleTabIndex = last;
+            _tabScrollLeft.Enabled = _firstVisibleTabIndex > 0;
+            _tabScrollRight.Enabled = _lastVisibleTabIndex >= 0 && _lastVisibleTabIndex < _tabs.TabPages.Count - 1;
+        }
+        finally
+        {
+            _tabHeaderFlow.ResumeLayout();
+        }
     }
 
     private void ConfigureMainMenu()
@@ -278,8 +369,18 @@ public sealed partial class MainForm : Form
         var view = new ToolStripMenuItem("Вид");
         var help = new ToolStripMenuItem("Справка");
 
-        connection.DropDownItems.Add(new ToolStripMenuItem("Подключиться", UiIconFactory.Get(UiIconKind.Connect, 16), (_, _) => _connect.PerformClick()));
-        connection.DropDownItems.Add(new ToolStripMenuItem("Обновить подключенный ПК", UiIconFactory.Get(UiIconKind.Refresh, 16), (_, _) => _refreshConnected.PerformClick()));
+        var directConnect = new ToolStripMenuItem("Подключиться по имени / IP...", UiIconFactory.Get(UiIconKind.Connect, 16));
+        directConnect.ShortcutKeys = Keys.Control | Keys.L;
+        directConnect.Click += async (_, _) =>
+        {
+            var initial = string.IsNullOrWhiteSpace(_target.Text) ? CurrentHost : _target.Text;
+            var host = PromptText("Прямое подключение", "DNS-имя или IP компьютера:", initial ?? string.Empty);
+            if (string.IsNullOrWhiteSpace(host)) return;
+            _target.Text = host.Trim();
+            await ConnectAsync(_target.Text);
+        };
+        connection.DropDownItems.Add(directConnect);
+        connection.DropDownItems.Add(new ToolStripMenuItem("Обновить текущий ПК", UiIconFactory.Get(UiIconKind.Refresh, 16), async (_, _) => await RefreshConnectedViewsAsync()));
         connection.DropDownItems.Add(new ToolStripSeparator());
         connection.DropDownItems.Add(new ToolStripMenuItem("RDP к текущему ПК", UiIconFactory.Get(UiIconKind.Rdp, 16), (_, _) =>
         {
@@ -290,8 +391,8 @@ public sealed partial class MainForm : Form
             if (!string.IsNullOrWhiteSpace(CurrentHost)) Process.Start(new ProcessStartInfo($@"\\{CurrentHost}\c$") { UseShellExecute = true });
         }));
 
-        domain.DropDownItems.Add(new ToolStripMenuItem("Обновить список ПК", UiIconFactory.Get(UiIconKind.Refresh, 16), (_, _) => _refreshDomain.PerformClick()));
-        domain.DropDownItems.Add(new ToolStripMenuItem("Остановить сканирование", UiIconFactory.Get(UiIconKind.Stop, 16), (_, _) => _cancelDomainScan.PerformClick()));
+        domain.DropDownItems.Add(new ToolStripMenuItem("Обновить список ПК", UiIconFactory.Get(UiIconKind.Refresh, 16), async (_, _) => await LoadDomainAsync()));
+        domain.DropDownItems.Add(new ToolStripMenuItem("Остановить сканирование", UiIconFactory.Get(UiIconKind.Stop, 16), (_, _) => _domainScanCts?.Cancel()));
 
         _favoritesMenu.DropDownOpening += (_, _) => PopulateMainFavoritesMenu(_favoritesMenu);
 
@@ -486,16 +587,21 @@ public sealed partial class MainForm : Form
 
     private Control BuildDomainPanel()
     {
-        var panel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(6) };
-        var header = new TableLayoutPanel { Dock = DockStyle.Top, Height = 66, ColumnCount = 1, RowCount = 2 };
-        header.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
-        header.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+        var root = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 3,
+            Padding = new Padding(6),
+            Margin = new Padding(0)
+        };
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
 
-        header.Controls.Add(_pcFilter, 0, 0);
-
-        var options = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
-        options.Controls.Add(_onlyActive);
-        header.Controls.Add(options, 0, 1);
+        _pcFilter.Margin = new Padding(0, 2, 0, 4);
+        root.Controls.Add(_pcFilter, 0, 0);
 
         _domainGrid.AutoGenerateColumns = false;
         _domainGrid.Columns.Add(new DataGridViewTextBoxColumn
@@ -514,28 +620,156 @@ public sealed partial class MainForm : Form
         _domainGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(DomainComputer.Users), HeaderText = "Пользователь", FillWeight = 150 });
         _domainGrid.DataSource = _visibleComputers;
         _domainGrid.CellFormatting += DomainGridCellFormatting;
+        root.Controls.Add(_domainGrid, 0, 1);
 
-        panel.Controls.Add(_domainGrid);
-        panel.Controls.Add(header);
-        return panel;
+        var footer = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+            Padding = new Padding(0, 5, 0, 0),
+            Margin = new Padding(0)
+        };
+        _onlyActive.Margin = new Padding(0, 0, 8, 0);
+        footer.Controls.Add(_onlyActive);
+        root.Controls.Add(footer, 0, 2);
+        return root;
     }
 
     private TabPage BuildOverviewTab()
     {
-        var tab = new TabPage("Обзор");
-        var split = CreateSafeSplitContainer(Orientation.Horizontal, desiredDistance: 270);
-        var diskPanel = new Panel { Dock = DockStyle.Fill };
+        var tab = new TabPage("Обзор") { Padding = new Padding(8), BackColor = SystemColors.Control };
+        var root = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 3,
+            Padding = new Padding(0),
+            Margin = new Padding(0)
+        };
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 92));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 42));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 58));
+
+        var summary = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 5,
+            RowCount = 1,
+            Margin = new Padding(0, 0, 0, 8),
+            Padding = new Padding(0)
+        };
+        for (var i = 0; i < 5; i++) summary.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20));
+        summary.Controls.Add(CreateOverviewCard("Компьютер", _overviewComputer, UiIconKind.Computer), 0, 0);
+        summary.Controls.Add(CreateOverviewCard("Пользователь", _overviewUser, UiIconKind.Users), 1, 0);
+        summary.Controls.Add(CreateOverviewCard("Операционная система", _overviewOs, UiIconKind.Info), 2, 0);
+        summary.Controls.Add(CreateOverviewCard("IPv4", _overviewIp, UiIconKind.Network), 3, 0);
+        summary.Controls.Add(CreateOverviewCard("Время работы", _overviewUptime, UiIconKind.Refresh), 4, 0);
+        root.Controls.Add(summary, 0, 0);
+
+        var disksBox = new GroupBox
+        {
+            Text = "Диски",
+            Dock = DockStyle.Fill,
+            Padding = new Padding(8, 8, 8, 8),
+            Margin = new Padding(0, 0, 0, 8)
+        };
+        var disksLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Margin = new Padding(0), Padding = new Padding(0) };
+        disksLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+        disksLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        var diskToolbar = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, Padding = new Padding(0), Margin = new Padding(0) };
         var refresh = Button("Обновить", async (_, _) => await RefreshOverviewAsync());
-        refresh.Dock = DockStyle.Top;
+        diskToolbar.Controls.Add(refresh);
         _diskGrid.Dock = DockStyle.Fill;
-        diskPanel.Controls.Add(_diskGrid);
-        diskPanel.Controls.Add(refresh);
-        MirrorToolbarToGridContextMenu(_diskGrid, diskPanel);
-        split.Panel1.Controls.Add(diskPanel);
-        split.Panel2.Controls.Add(_systemInfo);
-        tab.Controls.Add(split);
+        disksLayout.Controls.Add(diskToolbar, 0, 0);
+        disksLayout.Controls.Add(_diskGrid, 0, 1);
+        disksBox.Controls.Add(disksLayout);
+        MirrorToolbarToGridContextMenu(_diskGrid, diskToolbar);
+        root.Controls.Add(disksBox, 0, 1);
+
+        var infoBox = new GroupBox
+        {
+            Text = "Системная информация",
+            Dock = DockStyle.Fill,
+            Padding = new Padding(10),
+            Margin = new Padding(0)
+        };
+        infoBox.Controls.Add(_systemInfo);
+        root.Controls.Add(infoBox, 0, 2);
+
+        tab.Controls.Add(root);
         return tab;
     }
+
+    private static Label OverviewValueLabel()
+        => new()
+        {
+            Dock = DockStyle.Fill,
+            AutoEllipsis = true,
+            Text = "—",
+            Font = new Font(SystemFonts.MessageBoxFont, FontStyle.Bold),
+            TextAlign = ContentAlignment.MiddleLeft,
+            ForeColor = Color.FromArgb(35, 55, 75)
+        };
+
+    private static Control CreateOverviewCard(string title, Label value, UiIconKind iconKind)
+    {
+        var card = new Panel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = SystemColors.Window,
+            BorderStyle = BorderStyle.FixedSingle,
+            Margin = new Padding(0, 0, 8, 0),
+            Padding = new Padding(8)
+        };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2, Margin = new Padding(0), Padding = new Padding(0) };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 30));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        var icon = new PictureBox
+        {
+            Image = UiIconFactory.Get(iconKind, 20), SizeMode = PictureBoxSizeMode.CenterImage,
+            Dock = DockStyle.Fill, Margin = new Padding(0)
+        };
+        var titleLabel = new Label
+        {
+            Text = title, Dock = DockStyle.Fill, AutoEllipsis = true,
+            ForeColor = SystemColors.GrayText, TextAlign = ContentAlignment.MiddleLeft,
+            Margin = new Padding(0)
+        };
+        value.Margin = new Padding(0);
+        layout.Controls.Add(icon, 0, 0);
+        layout.SetRowSpan(icon, 2);
+        layout.Controls.Add(titleLabel, 1, 0);
+        layout.Controls.Add(value, 1, 1);
+        card.Controls.Add(layout);
+        return card;
+    }
+
+    private void UpdateOverviewSummary(string text)
+    {
+        var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var raw in text.Replace("\r", string.Empty).Split('\n'))
+        {
+            var line = raw.Trim();
+            var separator = line.IndexOf(':');
+            if (separator <= 0) continue;
+            var key = line[..separator].Trim();
+            var value = line[(separator + 1)..].Trim();
+            values[key] = value;
+        }
+
+        _overviewComputer.Text = ValueOrDash(values, "Имя компьютера");
+        _overviewUser.Text = ValueOrDash(values, "Пользователь");
+        _overviewOs.Text = ValueOrDash(values, "ОС");
+        _overviewIp.Text = ValueOrDash(values, "IPv4");
+        _overviewUptime.Text = ValueOrDash(values, "Время работы");
+    }
+
+    private static string ValueOrDash(IReadOnlyDictionary<string, string> values, string key)
+        => values.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value) ? value : "—";
 
     private TabPage BuildPowerShellTab()
     {
@@ -648,7 +882,13 @@ public sealed partial class MainForm : Form
         var userBar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 43, Padding = new Padding(4) };
         userBar.Controls.Add(new Label { Text = "Пользователь → ПК:", AutoSize = true, Padding = new Padding(0, 7, 0, 0) });
         userBar.Controls.Add(_userSearch);
-        userBar.Controls.Add(Button("Найти во всем домене", async (_, _) => await SearchUserAcrossDomainAsync(), 160));
+        userBar.Controls.Add(Button("Найти во всем домене", async (_, _) => await SearchUserAcrossDomainAsync(), 175));
+        _cancelUserSearch.Width = 82;
+        _cancelUserSearch.Height = 30;
+        _cancelUserSearch.AutoSize = false;
+        _cancelUserSearch.Margin = new Padding(3);
+        _cancelUserSearch.TextAlign = ContentAlignment.MiddleCenter;
+        ApplySystemButtonIcon(_cancelUserSearch);
         userBar.Controls.Add(_cancelUserSearch);
         userBar.Controls.Add(_userSearchStatus);
         _userSearchGrid.AutoGenerateColumns = true;
@@ -672,32 +912,106 @@ public sealed partial class MainForm : Form
 
     private TabPage BuildUtilitiesTab()
     {
-        var tab = new TabPage("Утилиты");
-        var flow = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(15), FlowDirection = FlowDirection.LeftToRight };
-        flow.Controls.Add(Button("RDP", (_, _) => LaunchLocal("mstsc.exe", $"/v:{CurrentHost}"), 170, 44));
-        flow.Controls.Add(Button("Открыть C$", (_, _) => LaunchLocal("explorer.exe", $"\\\\{CurrentHost}\\c$"), 170, 44));
-        flow.Controls.Add(Button("Computer Management", (_, _) => LaunchLocal("compmgmt.msc", $"/computer={CurrentHost}"), 170, 44));
-        flow.Controls.Add(Button("Event Viewer", (_, _) => LaunchLocal("eventvwr.msc", $"/computer={CurrentHost}"), 170, 44));
-        flow.Controls.Add(Button("GPUpdate /force", async (_, _) => await RunNativeUtilityAsync("gpupdate.exe", "/force", "gpupdate /force"), 170, 44));
-        flow.Controls.Add(Button("Flush DNS", async (_, _) => await RunNativeUtilityAsync("ipconfig.exe", "/flushdns", "ipconfig /flushdns"), 170, 44));
-        flow.Controls.Add(Button("IPConfig /all", async (_, _) => await RunNativeUtilityAsync("ipconfig.exe", "/all", "ipconfig /all"), 170, 44));
-        flow.Controls.Add(Button("Перезагрузить ПК", async (_, _) => await RestartRemoteAsync(), 170, 44));
-        flow.Controls.Add(Button("Системная информация", async (_, _) => await ShowSystemInformationAsync(), 170, 44));
-        flow.Controls.Add(Button("Обновить политики + DNS", async (_, _) => await RefreshPoliciesAndDnsAsync(), 190, 44));
+        var tab = new TabPage("Утилиты") { Padding = new Padding(10), BackColor = SystemColors.Control };
+        var root = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            RowCount = 3,
+            Padding = new Padding(0),
+            Margin = new Padding(0)
+        };
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 48));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 32));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 92));
 
-        var messageBox = new TextBox { Width = 500, PlaceholderText = "Сообщение активному пользователю" };
-        flow.Controls.Add(messageBox);
-        flow.Controls.Add(Button("Отправить сообщение", async (_, _) => await SendMessageAsync(messageBox.Text), 180, 32));
+        var consoles = CreateUtilityGroup("Подключение и оснастки",
+            Button("RDP", (_, _) => LaunchLocal("mstsc.exe", $"/v:{CurrentHost}"), 170, 38),
+            Button("Открыть C$", (_, _) => LaunchLocal("explorer.exe", $@"\\{CurrentHost}\c$"), 170, 38),
+            Button("Computer Management", (_, _) => LaunchLocal("compmgmt.msc", $"/computer={CurrentHost}"), 170, 38),
+            Button("Event Viewer", (_, _) => LaunchLocal("eventvwr.msc", $"/computer={CurrentHost}"), 170, 38));
 
-        tab.Controls.Add(flow);
+        var system = CreateUtilityGroup("Система",
+            Button("Системная информация", async (_, _) => await ShowSystemInformationAsync(), 190, 38),
+            Button("Перезагрузить ПК", async (_, _) => await RestartRemoteAsync(), 190, 38),
+            Button("GPUpdate /force", async (_, _) => await RunNativeUtilityAsync("gpupdate.exe", "/force", "gpupdate /force"), 190, 38),
+            Button("Обновить политики + DNS", async (_, _) => await RefreshPoliciesAndDnsAsync(), 190, 38));
+
+        var network = CreateUtilityGroup("Сеть",
+            Button("Flush DNS", async (_, _) => await RunNativeUtilityAsync("ipconfig.exe", "/flushdns", "ipconfig /flushdns"), 170, 38),
+            Button("IPConfig /all", async (_, _) => await RunNativeUtilityAsync("ipconfig.exe", "/all", "ipconfig /all"), 170, 38));
+        root.Controls.Add(consoles, 0, 0);
+        root.Controls.Add(system, 1, 0);
+        root.Controls.Add(network, 0, 1);
+        root.SetColumnSpan(network, 2);
+
+        var messageGroup = new GroupBox
+        {
+            Text = "Сообщение активному пользователю",
+            Dock = DockStyle.Fill,
+            Margin = new Padding(4),
+            Padding = new Padding(10)
+        };
+        var messageLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = new Padding(0), Padding = new Padding(0) };
+        messageLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        messageLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 190));
+        var messageBox = new TextBox { Dock = DockStyle.Fill, PlaceholderText = "Текст сообщения", Margin = new Padding(0, 5, 8, 5) };
+        var send = Button("Отправить сообщение", async (_, _) => await SendMessageAsync(messageBox.Text), 180, 34);
+        send.Dock = DockStyle.Fill;
+        send.Margin = new Padding(0, 2, 0, 2);
+        messageLayout.Controls.Add(messageBox, 0, 0);
+        messageLayout.Controls.Add(send, 1, 0);
+        messageGroup.Controls.Add(messageLayout);
+        root.Controls.Add(messageGroup, 0, 2);
+        root.SetColumnSpan(messageGroup, 2);
+
+        tab.Controls.Add(root);
         return tab;
+    }
+
+    private static Control CreateUtilityGroup(string title, params Button[] buttons)
+    {
+        var group = new GroupBox
+        {
+            Text = title,
+            Dock = DockStyle.Fill,
+            Margin = new Padding(4),
+            Padding = new Padding(10)
+        };
+        var grid = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            RowCount = Math.Max(1, (buttons.Length + 1) / 2),
+            Margin = new Padding(0),
+            Padding = new Padding(0)
+        };
+        grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        for (var r = 0; r < grid.RowCount; r++) grid.RowStyles.Add(new RowStyle(SizeType.Percent, 100f / grid.RowCount));
+
+        for (var i = 0; i < buttons.Length; i++)
+        {
+            var button = buttons[i];
+            button.Dock = DockStyle.Fill;
+            button.Margin = new Padding(4);
+            grid.Controls.Add(button, i % 2, i / 2);
+        }
+        group.Controls.Add(grid);
+        return group;
     }
 
     private void WireEvents()
     {
         _connect.Click += async (_, _) => await ConnectAsync(_target.Text);
         _refreshConnected.Click += async (_, _) => await RefreshConnectedViewsAsync();
-        _tabs.SelectedIndexChanged += async (_, _) => await AutoRefreshSelectedTabAsync();
+        _tabs.SelectedIndexChanged += async (_, _) =>
+        {
+            EnsureSelectedTabHeaderVisible();
+            await AutoRefreshSelectedTabAsync();
+        };
         _target.KeyDown += async (_, e) =>
         {
             if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; await ConnectAsync(_target.Text); }
@@ -888,6 +1202,7 @@ Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | ForEach-Object {
 ");
             BindGrid(_diskGrid, disks);
             _systemInfo.Text = await GetSystemInformationTextAsync();
+            UpdateOverviewSummary(_systemInfo.Text);
         }
         catch (Exception ex) { ShowError(ex); }
     }
@@ -1200,6 +1515,7 @@ $boot=$os.LastBootUpTime
         try
         {
             _systemInfo.Text = await GetSystemInformationTextAsync();
+            UpdateOverviewSummary(_systemInfo.Text);
             _suppressAutoTabRefresh = true;
             try { _tabs.SelectedTab = _tabs.TabPages.Cast<TabPage>().First(x => x.Text == "Обзор"); }
             finally { _suppressAutoTabRefresh = false; }
@@ -1303,6 +1619,11 @@ $boot=$os.LastBootUpTime
             grid.DataSource = null;
 
         _systemInfo.Clear();
+        _overviewComputer.Text = "—";
+        _overviewUser.Text = "—";
+        _overviewOs.Text = "—";
+        _overviewIp.Text = "—";
+        _overviewUptime.Text = "—";
         _sessionOutput.Clear();
         _networkOutput.Clear();
         _computerUserOutput.Clear();
@@ -1621,9 +1942,22 @@ $boot=$os.LastBootUpTime
     private static void BindGrid<T>(DataGridView grid, IEnumerable<T> items)
         => grid.DataSource = new SortableBindingList<T>(items.ToList());
 
-    private static Button Button(string text, EventHandler handler, int width = 100, int height = 28)
+    private static Button Button(string text, EventHandler handler, int width = 100, int height = 30)
     {
-        var b = new Button { Text = text, Width = width, Height = height, AutoSize = width == 100 };
+        var measuredWidth = TextRenderer.MeasureText(text, SystemFonts.MessageBoxFont).Width + 42;
+        var b = new Button
+        {
+            Text = text,
+            Width = width == 100 ? Math.Max(108, measuredWidth) : width,
+            Height = Math.Max(30, height),
+            AutoSize = false,
+            Margin = new Padding(3),
+            Padding = new Padding(5, 0, 5, 0),
+            UseVisualStyleBackColor = true,
+            TextAlign = ContentAlignment.MiddleCenter,
+            ImageAlign = ContentAlignment.MiddleLeft,
+            TextImageRelation = TextImageRelation.Overlay
+        };
         b.Click += handler;
         ApplySystemButtonIcon(b);
         return b;
@@ -1633,13 +1967,45 @@ $boot=$os.LastBootUpTime
     {
         try
         {
-            var image = GetSystemActionImage(button.Text);
-            if (image is null) return;
-            button.Image = image;
+            button.Image?.Dispose();
+            button.Image = GetSystemActionImage(button.Text);
             button.ImageAlign = ContentAlignment.MiddleLeft;
-            button.TextImageRelation = TextImageRelation.ImageBeforeText;
+            button.TextAlign = ContentAlignment.MiddleCenter;
+            // Overlay keeps the icon pinned to the same left coordinate instead
+            // of shifting together with text of different lengths.
+            button.TextImageRelation = TextImageRelation.Overlay;
         }
         catch { }
+    }
+
+    private static void NormalizeFlowLayoutControls(Control root)
+    {
+        foreach (Control child in root.Controls)
+        {
+            if (child is FlowLayoutPanel flow)
+            {
+                if (flow.Height > 0 && flow.Height <= 48)
+                    flow.WrapContents = false;
+
+                foreach (Control item in flow.Controls)
+                {
+                    switch (item)
+                    {
+                        case Button button:
+                            button.Margin = new Padding(3);
+                            if (button.Height < 30) button.Height = 30;
+                            break;
+                        case TextBox or ComboBox or NumericUpDown:
+                            item.Margin = new Padding(3, 4, 3, 3);
+                            break;
+                        case CheckBox:
+                            item.Margin = new Padding(3, 7, 3, 3);
+                            break;
+                    }
+                }
+            }
+            NormalizeFlowLayoutControls(child);
+        }
     }
 
     private static Image? GetSystemActionImage(string? actionText)
