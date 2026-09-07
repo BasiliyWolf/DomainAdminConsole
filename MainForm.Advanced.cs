@@ -301,6 +301,111 @@ public sealed partial class MainForm
         _domainGrid.ContextMenuStrip = menu;
     }
 
+
+    private void PopulateMainFavoritesMenu(ToolStripMenuItem parent)
+    {
+        parent.DropDownItems.Clear();
+
+        var addCurrent = new ToolStripMenuItem("Добавить текущий ПК", UiIconFactory.Get(UiIconKind.Star, 16));
+        addCurrent.Click += (_, _) => AddCurrentFavorite();
+        parent.DropDownItems.Add(addCurrent);
+
+        var addSelected = new ToolStripMenuItem("Добавить выбранный ПК из домена", UiIconFactory.Get(UiIconKind.Add, 16))
+        {
+            Enabled = _domainGrid.CurrentRow?.DataBoundItem is DomainComputer
+        };
+        addSelected.Click += (_, _) => AddDomainComputerToFavorites();
+        parent.DropDownItems.Add(addSelected);
+        parent.DropDownItems.Add(new ToolStripSeparator());
+
+        if (_favorites.Count == 0)
+        {
+            parent.DropDownItems.Add(new ToolStripMenuItem("Нет избранных ПК") { Enabled = false });
+            return;
+        }
+
+        foreach (var group in _favorites.GroupBy(x => string.IsNullOrWhiteSpace(x.Group) ? "Общие" : x.Group)
+                     .OrderBy(x => x.Key, StringComparer.CurrentCultureIgnoreCase))
+        {
+            var groupItem = new ToolStripMenuItem(group.Key, UiIconFactory.Get(UiIconKind.FolderOpen, 16));
+            foreach (var favorite in group.OrderBy(x => x.Name, StringComparer.CurrentCultureIgnoreCase))
+            {
+                var favoriteItem = new ToolStripMenuItem(favorite.Name, UiIconFactory.Get(UiIconKind.Star, 16))
+                {
+                    ToolTipText = favorite.Host
+                };
+
+                var connect = new ToolStripMenuItem("Подключиться", UiIconFactory.Get(UiIconKind.Connect, 16));
+                connect.Click += async (_, _) => await ConnectFavoriteAsync(favorite);
+                favoriteItem.DropDownItems.Add(connect);
+
+                var rdp = new ToolStripMenuItem("RDP", UiIconFactory.Get(UiIconKind.Rdp, 16));
+                rdp.Click += (_, _) => LaunchLocal("mstsc.exe", $"/v:{favorite.Host}");
+                favoriteItem.DropDownItems.Add(rdp);
+
+                var share = new ToolStripMenuItem("Открыть C$", UiIconFactory.Get(UiIconKind.FolderOpen, 16));
+                share.Click += (_, _) => LaunchLocal("explorer.exe", $@"\\{favorite.Host}\c$");
+                favoriteItem.DropDownItems.Add(share);
+
+                favoriteItem.DropDownItems.Add(new ToolStripSeparator());
+
+                var edit = new ToolStripMenuItem("Изменить", UiIconFactory.Get(UiIconKind.Edit, 16));
+                edit.Click += (_, _) => EditFavorite(favorite);
+                favoriteItem.DropDownItems.Add(edit);
+
+                var remove = new ToolStripMenuItem("Удалить", UiIconFactory.Get(UiIconKind.Delete, 16));
+                remove.Click += (_, _) => RemoveFavorite(favorite);
+                favoriteItem.DropDownItems.Add(remove);
+
+                groupItem.DropDownItems.Add(favoriteItem);
+            }
+            parent.DropDownItems.Add(groupItem);
+        }
+    }
+
+    private async Task ConnectFavoriteAsync(FavoriteComputer favorite)
+    {
+        _target.Text = favorite.Host;
+        await ConnectAsync(favorite.Host);
+    }
+
+    private void EditFavorite(FavoriteComputer selected)
+    {
+        using var dialog = new FavoriteEditDialog(new FavoriteComputer
+        {
+            Name = selected.Name,
+            Host = selected.Host,
+            Group = selected.Group,
+            Notes = selected.Notes
+        });
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+
+        var duplicate = _favorites.Any(x => !ReferenceEquals(x, selected) &&
+            x.Host.Equals(dialog.Result.Host, StringComparison.OrdinalIgnoreCase));
+        if (duplicate)
+        {
+            MessageBox.Show("ПК с таким DNS/IP уже есть в избранном.", "Избранное", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        selected.Name = dialog.Result.Name;
+        selected.Host = dialog.Result.Host;
+        selected.Group = dialog.Result.Group;
+        selected.Notes = dialog.Result.Notes;
+        _favorites.ResetBindings();
+        SaveFavorites();
+        WriteAudit("favorites.edit", $"{selected.Group}: {selected.Name} ({selected.Host})", true, selected.Host);
+    }
+
+    private void RemoveFavorite(FavoriteComputer selected)
+    {
+        if (MessageBox.Show($"Удалить {selected.Name} из избранного?", "Избранное",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+        _favorites.Remove(selected);
+        SaveFavorites();
+        WriteAudit("favorites.remove", $"{selected.Name} ({selected.Host})", true, selected.Host);
+    }
+
     private void ConfigureAdvancedTray(ContextMenuStrip menu)
     {
         var favoriteMenu = new ToolStripMenuItem("Избранные ПК");
@@ -372,24 +477,14 @@ public sealed partial class MainForm
 
     private void EditSelectedFavorite()
     {
-        if (_favoritesGrid.CurrentRow?.DataBoundItem is not FavoriteComputer selected) return;
-        using var dialog = new FavoriteEditDialog(new FavoriteComputer { Name = selected.Name, Host = selected.Host, Group = selected.Group, Notes = selected.Notes });
-        if (dialog.ShowDialog(this) != DialogResult.OK) return;
-        selected.Name = dialog.Result.Name;
-        selected.Host = dialog.Result.Host;
-        selected.Group = dialog.Result.Group;
-        selected.Notes = dialog.Result.Notes;
-        _favorites.ResetBindings();
-        SaveFavorites();
+        if (_favoritesGrid.CurrentRow?.DataBoundItem is FavoriteComputer selected)
+            EditFavorite(selected);
     }
 
     private void RemoveSelectedFavorite()
     {
-        if (_favoritesGrid.CurrentRow?.DataBoundItem is not FavoriteComputer selected) return;
-        if (MessageBox.Show($"Удалить {selected.Name} из избранного?", "Избранное", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
-        _favorites.Remove(selected);
-        SaveFavorites();
-        WriteAudit("favorites.remove", $"{selected.Name} ({selected.Host})", true, selected.Host);
+        if (_favoritesGrid.CurrentRow?.DataBoundItem is FavoriteComputer selected)
+            RemoveFavorite(selected);
     }
 
     private async Task ConnectSelectedFavoriteAsync()

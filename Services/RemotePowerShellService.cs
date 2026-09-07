@@ -163,23 +163,85 @@ if($p.ExitCode -ne 0) {{ throw '{safeFile} exit code ' + $p.ExitCode }}
 
     public async Task<T?> ExecuteJsonAsync<T>(string script, CancellationToken cancellationToken = default)
     {
-        var json = await ExecuteTextAsync($"& {{ {script} }} | ConvertTo-Json -Depth 6 -Compress", cancellationToken);
-        if (string.IsNullOrWhiteSpace(json)) return default;
-        return JsonSerializer.Deserialize<T>(json.Trim(), JsonOptions);
+        // JSON-команды должны либо вернуть корректный JSON, либо понятную ошибку
+        // PowerShell. В старых версиях ExecuteTextAsync добавлял строки "ERROR: ..."
+        // к выводу, после чего System.Text.Json падал с сообщением вроде
+        // "'E' is an invalid start of a value".
+        var wrapped = $"$ErrorActionPreference='Stop'; & {{ {script} }} | ConvertTo-Json -Depth 6 -Compress";
+        var raw = await ExecuteTextAsync(wrapped, cancellationToken);
+        if (string.IsNullOrWhiteSpace(raw)) return default;
+
+        var json = ValidateJsonPayload(raw);
+        try
+        {
+            return JsonSerializer.Deserialize<T>(json, JsonOptions);
+        }
+        catch (JsonException ex)
+        {
+            throw CreateJsonParseException(json, ex);
+        }
     }
 
     public async Task<List<T>> ExecuteJsonListAsync<T>(string script, CancellationToken cancellationToken = default)
     {
-        var json = await ExecuteTextAsync($"@(& {{ {script} }}) | ConvertTo-Json -Depth 6 -Compress", cancellationToken);
-        if (string.IsNullOrWhiteSpace(json)) return [];
+        var wrapped = $"$ErrorActionPreference='Stop'; @(& {{ {script} }}) | ConvertTo-Json -Depth 6 -Compress";
+        var raw = await ExecuteTextAsync(wrapped, cancellationToken);
+        if (string.IsNullOrWhiteSpace(raw)) return [];
 
-        var trimmed = json.Trim();
-        if (trimmed.StartsWith("["))
-            return JsonSerializer.Deserialize<List<T>>(trimmed, JsonOptions) ?? [];
+        var json = ValidateJsonPayload(raw);
+        try
+        {
+            if (json.StartsWith("[", StringComparison.Ordinal))
+                return JsonSerializer.Deserialize<List<T>>(json, JsonOptions) ?? [];
 
-        var one = JsonSerializer.Deserialize<T>(trimmed, JsonOptions);
-        return one is null ? [] : [one];
+            var one = JsonSerializer.Deserialize<T>(json, JsonOptions);
+            return one is null ? [] : [one];
+        }
+        catch (JsonException ex)
+        {
+            throw CreateJsonParseException(json, ex);
+        }
     }
+
+    private static string ValidateJsonPayload(string raw)
+    {
+        var trimmed = raw.Trim().TrimStart('\uFEFF');
+        if (trimmed.Length == 0) return trimmed;
+
+        // Ошибки PowerShell специально добавляются ExecuteTextAsync как ERROR:.
+        // Не передаём их в JsonSerializer — показываем реальную причину пользователю.
+        var errorIndex = trimmed.StartsWith("ERROR:", StringComparison.OrdinalIgnoreCase)
+            ? 0
+            : trimmed.IndexOf("\nERROR:", StringComparison.OrdinalIgnoreCase);
+        if (errorIndex >= 0)
+        {
+            if (trimmed[errorIndex] == '\n') errorIndex++;
+            var errorText = trimmed[errorIndex..].Trim();
+            throw new InvalidOperationException(
+                "Удалённая PowerShell-команда завершилась ошибкой:\r\n" + TruncateForMessage(errorText));
+        }
+
+        var first = trimmed[0];
+        var validStart = first is '{' or '[' or '\"' or '-' || char.IsDigit(first) ||
+                         first is 't' or 'f' or 'n';
+        if (!validStart)
+        {
+            throw new InvalidOperationException(
+                "Удалённая команда вернула ответ не в формате JSON.\r\n" +
+                "Начало ответа:\r\n" + TruncateForMessage(trimmed));
+        }
+
+        return trimmed;
+    }
+
+    private static InvalidOperationException CreateJsonParseException(string json, JsonException inner)
+        => new(
+            "Не удалось разобрать JSON, возвращённый удалённой PowerShell-командой.\r\n" +
+            $"{inner.Message}\r\n\r\nОтвет:\r\n{TruncateForMessage(json)}",
+            inner);
+
+    private static string TruncateForMessage(string value, int maxLength = 1800)
+        => value.Length <= maxLength ? value : value[..maxLength] + "\r\n... (ответ сокращён)";
 
     public static async Task<string> ExecuteOneShotTextAsync(
         string host,

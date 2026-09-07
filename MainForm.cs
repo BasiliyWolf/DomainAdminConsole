@@ -1,3 +1,4 @@
+using DomainAdminConsole.Controls;
 using DomainAdminConsole.Models;
 using DomainAdminConsole.Services;
 using System.ComponentModel;
@@ -13,6 +14,7 @@ public sealed partial class MainForm : Form
 {
     private readonly DomainService _domain = new();
     private readonly RemotePowerShellService _remote = new();
+    private readonly GitHubUpdateService _updates = new();
     private readonly SortableBindingList<DomainComputer> _domainComputers = [];
     private readonly SortableBindingList<DomainComputer> _visibleComputers = [];
 
@@ -38,16 +40,22 @@ public sealed partial class MainForm : Form
     private CancellationTokenSource? _domainScanCts;
 
     private readonly MenuStrip _mainMenu = new() { Dock = DockStyle.Top, GripStyle = ToolStripGripStyle.Hidden, ImageScalingSize = new Size(16, 16) };
-    private readonly TabControl _tabs = new()
+    private readonly SingleLineTabControl _tabs = new()
     {
         Dock = DockStyle.Fill,
-        Appearance = TabAppearance.Normal,
-        SizeMode = TabSizeMode.Normal,
-        Multiline = false,
-        HotTrack = true,
-        ShowToolTips = true,
-        Padding = new Point(12, 4)
+        Appearance = TabAppearance.Normal
     };
+    private readonly Button _tabScrollLeft = new()
+    {
+        Text = "◀", Width = 28, Height = 24, TabStop = false, FlatStyle = FlatStyle.System,
+        AccessibleName = "Предыдущая вкладка"
+    };
+    private readonly Button _tabScrollRight = new()
+    {
+        Text = "▶", Width = 28, Height = 24, TabStop = false, FlatStyle = FlatStyle.System,
+        AccessibleName = "Следующая вкладка"
+    };
+    private readonly ToolStripMenuItem _favoritesMenu = new("Избранное");
     private readonly DataGridView _diskGrid = Grid();
     private readonly RichTextBox _systemInfo = new() { Dock = DockStyle.Fill, ReadOnly = true, Font = new Font("Consolas", 10) };
     private readonly RichTextBox _psOutput = new() { Dock = DockStyle.Fill, ReadOnly = true, BackColor = Color.FromArgb(20, 20, 20), ForeColor = Color.Gainsboro, Font = new Font("Consolas", 10) };
@@ -75,13 +83,15 @@ public sealed partial class MainForm : Form
 
     public MainForm()
     {
-        Text = "Domain Admin Console 0.3.5";
+        Text = "Domain Admin Console 0.3.7 — BasiliyWolf";
         Width = 1500;
         Height = 900;
+        WindowState = FormWindowState.Maximized;
         MinimumSize = new Size(1100, 650);
         StartPosition = FormStartPosition.CenterScreen;
 
         BuildUi();
+        try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
         _remote.BusyChanged += RemoteBusyChanged;
         ConfigureTray();
         WireEvents();
@@ -91,8 +101,10 @@ public sealed partial class MainForm : Form
 
         Shown += async (_, _) =>
         {
+            WindowState = FormWindowState.Maximized;
             _tabs.Visible = true;
             _tabs.BringToFront();
+            _ = CheckForUpdatesAsync(showNoUpdateMessage: false);
             await LoadDomainAsync();
         };
         FormClosing += OnFormClosing;
@@ -146,7 +158,6 @@ public sealed partial class MainForm : Form
         _tabs.TabPages.Add(BuildDomainSearchTab());
         _tabs.TabPages.Add(BuildBulkTab());
         _tabs.TabPages.Add(BuildWakeOnLanTab());
-        _tabs.TabPages.Add(BuildFavoritesTab());
         _tabs.TabPages.Add(BuildShadowTab());
         _tabs.TabPages.Add(BuildRegistryTab());
         _tabs.TabPages.Add(BuildScheduledTasksTab());
@@ -166,19 +177,71 @@ public sealed partial class MainForm : Form
 
         ConfigureMainMenu();
         ConfigureStatusStrip();
-        Controls.Add(split);
-        Controls.Add(top);
-        Controls.Add(_mainMenu);
-        Controls.Add(_statusStrip);
+
+        // Explicit row layout guarantees that the application menu is always
+        // the topmost row, followed by the connection toolbar, workspace and status bar.
+        var root = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 4,
+            Margin = new Padding(0),
+            Padding = new Padding(0)
+        };
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        _mainMenu.Dock = DockStyle.Fill;
+        _mainMenu.Margin = new Padding(0);
+        top.Dock = DockStyle.Fill;
+        top.Margin = new Padding(0);
+        split.Dock = DockStyle.Fill;
+        split.Margin = new Padding(0);
+        _statusStrip.Dock = DockStyle.Fill;
+        _statusStrip.Margin = new Padding(0);
+
+        root.Controls.Add(_mainMenu, 0, 0);
+        root.Controls.Add(top, 0, 1);
+        root.Controls.Add(split, 0, 2);
+        root.Controls.Add(_statusStrip, 0, 3);
+
+        Controls.Clear();
+        Controls.Add(root);
         MainMenuStrip = _mainMenu;
-        _statusStrip.BringToFront();
-        top.BringToFront();
-        _mainMenu.BringToFront();
+
+        _tabs.Visible = true;
+        _tabs.BringToFront();
     }
 
     private Control BuildWorkspacePanel()
     {
-        var host = new Panel { Dock = DockStyle.Fill };
+        var host = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 3,
+            RowCount = 1,
+            Margin = new Padding(0),
+            Padding = new Padding(0)
+        };
+        host.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 30));
+        host.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        host.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 30));
+        host.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        var leftHost = new Panel { Dock = DockStyle.Fill, Padding = new Padding(2, 2, 0, 0) };
+        var rightHost = new Panel { Dock = DockStyle.Fill, Padding = new Padding(0, 2, 2, 0) };
+        _tabScrollLeft.Anchor = AnchorStyles.Top | AnchorStyles.Left;
+        _tabScrollRight.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        _tabScrollLeft.Location = new Point(1, 2);
+        _tabScrollRight.Location = new Point(1, 2);
+        _tabScrollLeft.Click += (_, _) => SelectRelativeTab(-1);
+        _tabScrollRight.Click += (_, _) => SelectRelativeTab(+1);
+        leftHost.Controls.Add(_tabScrollLeft);
+        rightHost.Controls.Add(_tabScrollRight);
+
         var center = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 3, BackColor = SystemColors.ControlLightLight };
         center.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         center.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -195,10 +258,10 @@ public sealed partial class MainForm : Form
         center.Controls.Add(card, 1, 1);
         _busyOverlay.Controls.Add(center);
 
-        // Overlay is added first so the TabControl owns the normal foreground/Z-order.
-        // While an operation is running RemoteBusyChanged explicitly brings the overlay forward.
-        host.Controls.Add(_busyOverlay);
-        host.Controls.Add(_tabs);
+        host.Controls.Add(leftHost, 0, 0);
+        host.Controls.Add(_tabs, 1, 0);
+        host.Controls.Add(rightHost, 2, 0);
+        _tabs.Visible = true;
         _tabs.BringToFront();
         return host;
     }
@@ -207,50 +270,65 @@ public sealed partial class MainForm : Form
     {
         _mainMenu.Items.Clear();
 
-        var navigation = new ToolStripMenuItem("Разделы", WindowsShellIcon.Get(ShellStockIcon.Application, 16));
-        var connection = new ToolStripMenuItem("Подключение", WindowsShellIcon.Get(ShellStockIcon.NetworkConnect, 16));
-        var domain = new ToolStripMenuItem("Домен", WindowsShellIcon.Get(ShellStockIcon.Users, 16));
-        var view = new ToolStripMenuItem("Вид", WindowsShellIcon.Get(ShellStockIcon.Settings, 16));
+        // Top-level menu intentionally uses text only, like standard Windows applications.
+        // All action icons inside drop-down menus are generated locally and are DPI-safe.
+        var connection = new ToolStripMenuItem("Подключение");
+        var domain = new ToolStripMenuItem("Домен");
+        var navigation = new ToolStripMenuItem("Разделы");
+        var view = new ToolStripMenuItem("Вид");
+        var help = new ToolStripMenuItem("Справка");
 
-        connection.DropDownItems.Add(new ToolStripMenuItem("Подключиться", WindowsShellIcon.Get(ShellStockIcon.NetworkConnect, 16), (_, _) => _connect.PerformClick()));
-        connection.DropDownItems.Add(new ToolStripMenuItem("Обновить подключенный ПК", WindowsShellIcon.Get(ShellStockIcon.Info, 16), (_, _) => _refreshConnected.PerformClick()));
+        connection.DropDownItems.Add(new ToolStripMenuItem("Подключиться", UiIconFactory.Get(UiIconKind.Connect, 16), (_, _) => _connect.PerformClick()));
+        connection.DropDownItems.Add(new ToolStripMenuItem("Обновить подключенный ПК", UiIconFactory.Get(UiIconKind.Refresh, 16), (_, _) => _refreshConnected.PerformClick()));
         connection.DropDownItems.Add(new ToolStripSeparator());
-        connection.DropDownItems.Add(new ToolStripMenuItem("RDP к текущему ПК", WindowsShellIcon.Get(ShellStockIcon.DesktopPc, 16), (_, _) =>
+        connection.DropDownItems.Add(new ToolStripMenuItem("RDP к текущему ПК", UiIconFactory.Get(UiIconKind.Rdp, 16), (_, _) =>
         {
             if (!string.IsNullOrWhiteSpace(CurrentHost)) Process.Start(new ProcessStartInfo("mstsc.exe", $"/v:{CurrentHost}") { UseShellExecute = true });
         }));
-        connection.DropDownItems.Add(new ToolStripMenuItem("Открыть C$", WindowsShellIcon.Get(ShellStockIcon.FolderOpen, 16), (_, _) =>
+        connection.DropDownItems.Add(new ToolStripMenuItem("Открыть C$", UiIconFactory.Get(UiIconKind.FolderOpen, 16), (_, _) =>
         {
             if (!string.IsNullOrWhiteSpace(CurrentHost)) Process.Start(new ProcessStartInfo($@"\\{CurrentHost}\c$") { UseShellExecute = true });
         }));
 
-        domain.DropDownItems.Add(new ToolStripMenuItem("Обновить список ПК", WindowsShellIcon.Get(ShellStockIcon.Info, 16), (_, _) => _refreshDomain.PerformClick()));
-        domain.DropDownItems.Add(new ToolStripMenuItem("Остановить сканирование", WindowsShellIcon.Get(ShellStockIcon.Error, 16), (_, _) => _cancelDomainScan.PerformClick()));
+        domain.DropDownItems.Add(new ToolStripMenuItem("Обновить список ПК", UiIconFactory.Get(UiIconKind.Refresh, 16), (_, _) => _refreshDomain.PerformClick()));
+        domain.DropDownItems.Add(new ToolStripMenuItem("Остановить сканирование", UiIconFactory.Get(UiIconKind.Stop, 16), (_, _) => _cancelDomainScan.PerformClick()));
 
-        view.DropDownItems.Add(new ToolStripMenuItem("Следующая вкладка", null, (_, _) => SelectRelativeTab(+1)) { ShortcutKeys = Keys.Control | Keys.Tab });
-        view.DropDownItems.Add(new ToolStripMenuItem("Предыдущая вкладка", null, (_, _) => SelectRelativeTab(-1)) { ShortcutKeys = Keys.Control | Keys.Shift | Keys.Tab });
+        _favoritesMenu.DropDownOpening += (_, _) => PopulateMainFavoritesMenu(_favoritesMenu);
 
-        AddTabNavigationCategory(navigation, "Основное", ShellStockIcon.DesktopPc,
+        view.DropDownItems.Add(new ToolStripMenuItem("Следующая вкладка", null, (_, _) => SelectRelativeTab(+1)));
+        view.DropDownItems.Add(new ToolStripMenuItem("Предыдущая вкладка", null, (_, _) => SelectRelativeTab(-1)));
+
+        help.DropDownItems.Add(new ToolStripMenuItem("Проверить обновления", UiIconFactory.Get(UiIconKind.Refresh, 16),
+            async (_, _) => await CheckForUpdatesAsync(showNoUpdateMessage: true)));
+        help.DropDownItems.Add(new ToolStripMenuItem("Открыть GitHub", UiIconFactory.Get(UiIconKind.World, 16),
+            (_, _) => GitHubUpdateService.OpenRepository()));
+        help.DropDownItems.Add(new ToolStripSeparator());
+        help.DropDownItems.Add(new ToolStripMenuItem("О программе", UiIconFactory.Get(UiIconKind.Info, 16),
+            (_, _) => ShowAboutDialog()));
+
+        AddTabNavigationCategory(navigation, "Основное", UiIconKind.Computer,
             "Обзор", "PowerShell", "Файловый менеджер");
-        AddTabNavigationCategory(navigation, "Мониторинг", ShellStockIcon.Info,
+        AddTabNavigationCategory(navigation, "Мониторинг", UiIconKind.Info,
             "Процессы", "Службы", "Журналы Windows", "Порты", "Ping / Tracert", "Сеансы");
-        AddTabNavigationCategory(navigation, "Домен", ShellStockIcon.Users,
-            "Поиск в домене", "Массовые действия", "Wake-on-LAN", "Избранное", "RDP Shadow");
-        AddTabNavigationCategory(navigation, "Администрирование", ShellStockIcon.Settings,
+        AddTabNavigationCategory(navigation, "Домен", UiIconKind.Users,
+            "Поиск в домене", "Массовые действия", "Wake-on-LAN", "RDP Shadow");
+        AddTabNavigationCategory(navigation, "Администрирование", UiIconKind.Settings,
             "Реестр", "Планировщик", "Программы", "Локальные учётки", "Сеть ПК", "Windows Update",
             "BitLocker / TPM", "Принтеры", "Сертификаты", "Firewall", "SMB Sessions / Files", "Устройства / драйверы");
-        AddTabNavigationCategory(navigation, "Инструменты", ShellStockIcon.Application,
+        AddTabNavigationCategory(navigation, "Инструменты", UiIconKind.Script,
             "PowerShell-скрипты", "Утилиты", "Журнал действий");
 
         _mainMenu.Items.Add(connection);
         _mainMenu.Items.Add(domain);
+        _mainMenu.Items.Add(_favoritesMenu);
         _mainMenu.Items.Add(navigation);
         _mainMenu.Items.Add(view);
+        _mainMenu.Items.Add(help);
     }
 
-    private void AddTabNavigationCategory(ToolStripMenuItem parent, string title, ShellStockIcon icon, params string[] tabNames)
+    private void AddTabNavigationCategory(ToolStripMenuItem parent, string title, UiIconKind icon, params string[] tabNames)
     {
-        var category = new ToolStripMenuItem(title, WindowsShellIcon.Get(icon, 16));
+        var category = new ToolStripMenuItem(title, UiIconFactory.Get(icon, 16));
         foreach (var tabName in tabNames)
         {
             var page = _tabs.TabPages.Cast<TabPage>().FirstOrDefault(t => string.Equals(t.Text, tabName, StringComparison.OrdinalIgnoreCase));
@@ -272,6 +350,84 @@ public sealed partial class MainForm : Form
             };
             parent.DropDownItems.Add(category);
         }
+    }
+
+    private async Task CheckForUpdatesAsync(bool showNoUpdateMessage)
+    {
+        var result = await _updates.CheckAsync();
+        if (IsDisposed) return;
+
+        if (!result.Success)
+        {
+            if (showNoUpdateMessage)
+                MessageBox.Show(this, result.Error ?? "Не удалось проверить обновления.", "Проверка обновлений",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        if (result.IsUpdateAvailable)
+        {
+            using var prompt = new UpdateAvailableForm(result);
+            prompt.ShowDialog(this);
+            switch (prompt.Action)
+            {
+                case UpdatePromptAction.Install:
+                    await InstallUpdateAsync(result);
+                    break;
+                case UpdatePromptAction.OpenRelease:
+                    GitHubUpdateService.OpenRelease(result);
+                    break;
+            }
+        }
+        else if (showNoUpdateMessage)
+        {
+            MessageBox.Show(this, "Установлена актуальная версия Domain Admin Console.",
+                "Проверка обновлений", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+    }
+
+    private async Task InstallUpdateAsync(UpdateCheckResult result)
+    {
+        if (!result.CanSelfUpdate)
+        {
+            MessageBox.Show(this,
+                "В GitHub Release не найден подходящий файл обновления.\r\n" +
+                "Опубликуйте asset DomainAdminConsole-win-x64.zip или откройте страницу релиза.",
+                "Обновление", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            GitHubUpdateService.OpenRelease(result);
+            return;
+        }
+
+        using var progressForm = new UpdateProgressForm(result.LatestVersion);
+        progressForm.Show(this);
+        progressForm.Refresh();
+        var progress = new Progress<int>(p => progressForm.SetProgress(p));
+        var prepared = await _updates.DownloadAndPrepareUpdateAsync(result, progress);
+        progressForm.Close();
+
+        if (!prepared.Success)
+        {
+            MessageBox.Show(this, prepared.Error ?? "Не удалось подготовить обновление.",
+                "Ошибка обновления", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+
+        if (!_updates.LaunchPreparedUpdate(prepared))
+        {
+            MessageBox.Show(this, prepared.Error ?? "Не удалось запустить установщик обновления.",
+                "Ошибка обновления", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+
+        _reallyExit = true;
+        _tray.Visible = false;
+        Application.Exit();
+    }
+
+    private void ShowAboutDialog()
+    {
+        using var about = new AboutForm(_updates);
+        about.ShowDialog(this);
     }
 
     private void SelectRelativeTab(int direction)
@@ -300,17 +456,29 @@ public sealed partial class MainForm : Form
         if (IsDisposed || !IsHandleCreated) return;
         BeginInvoke(new Action(() =>
         {
-            _busyOverlay.Visible = busy;
             if (busy)
             {
                 _busyOverlayLabel.Text = string.IsNullOrWhiteSpace(CurrentHost)
                     ? "Подключение..."
                     : $"Загрузка данных с {CurrentHost}...";
-                _busyOverlay.BringToFront();
+
+                var page = _tabs.SelectedTab;
+                if (page is not null)
+                {
+                    if (!ReferenceEquals(_busyOverlay.Parent, page))
+                    {
+                        _busyOverlay.Parent?.Controls.Remove(_busyOverlay);
+                        page.Controls.Add(_busyOverlay);
+                    }
+                    _busyOverlay.Dock = DockStyle.Fill;
+                    _busyOverlay.Visible = true;
+                    _busyOverlay.BringToFront();
+                }
             }
             else
             {
-                // Restore the real workspace including the tab header strip.
+                _busyOverlay.Visible = false;
+                _tabs.Visible = true;
                 _tabs.BringToFront();
             }
         }));
@@ -327,8 +495,6 @@ public sealed partial class MainForm : Form
 
         var options = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
         options.Controls.Add(_onlyActive);
-        options.Controls.Add(_refreshDomain);
-        options.Controls.Add(_cancelDomainScan);
         header.Controls.Add(options, 0, 1);
 
         _domainGrid.AutoGenerateColumns = false;
@@ -572,7 +738,8 @@ public sealed partial class MainForm : Form
 
     private void ConfigureTray()
     {
-        _tray.Icon = SystemIcons.Application;
+        try { _tray.Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? SystemIcons.Application; }
+        catch { _tray.Icon = SystemIcons.Application; }
         var menu = new ContextMenuStrip();
         menu.Items.Add("Открыть", null, (_, _) => RestoreFromTray());
         menu.Items.Add("RDP к текущему ПК", null, (_, _) => { if (!string.IsNullOrWhiteSpace(CurrentHost)) LaunchLocal("mstsc.exe", $"/v:{CurrentHost}"); });
@@ -1478,37 +1645,54 @@ $boot=$os.LastBootUpTime
     private static Image? GetSystemActionImage(string? actionText)
     {
         var text = (actionText ?? string.Empty).ToLowerInvariant();
-        var stockId = text.Contains("удал") || text.Contains("закры") || text.Contains("отмен")
-            ? ShellStockIcon.Delete
-            : text.Contains("останов") || text.Contains("стоп") || text.Contains("выключ")
-                ? ShellStockIcon.Error
-                : text.Contains("перез") || text.Contains("restart") || text.Contains("suspend")
-                    ? ShellStockIcon.Warning
-                    : text.Contains("поиск") || text.Contains("найти") || text.Contains("scan")
-                        ? ShellStockIcon.Find
-                        : text.Contains("rdp") || text.Contains("подключ") || text.Contains("сеть")
-                            ? ShellStockIcon.NetworkConnect
-                            : text.Contains("папк") || text.Contains("explorer") || text.Contains("открыть c$")
-                                ? ShellStockIcon.FolderOpen
-                                : text.Contains("переимен")
-                                    ? ShellStockIcon.Rename
-                                    : text.Contains("принтер") || text.Contains("печать")
-                                        ? ShellStockIcon.Printer
-                                        : text.Contains("сертифик") || text.Contains("ключ")
-                                            ? ShellStockIcon.Key
-                                            : text.Contains("пользоват") || text.Contains("учет") || text.Contains("учёт")
-                                                ? ShellStockIcon.Users
-                                                : text.Contains("систем") || text.Contains("компьют") || text.Contains("пк")
-                                                    ? ShellStockIcon.DesktopPc
-                                                    : text.Contains("настрой") || text.Contains("политик")
-                                                        ? ShellStockIcon.Settings
-                                                        : text.Contains("обнов") || text.Contains("диагност") || text.Contains("информа")
-                                                            ? ShellStockIcon.Info
-                                                            : text.Contains("откры") || text.Contains("выполн") || text.Contains("запуст") || text.Contains("включ")
-                                                                ? ShellStockIcon.Application
-                                                                : ShellStockIcon.Application;
+        UiIconKind kind;
 
-        return WindowsShellIcon.Get(stockId, 16);
+        if (text.Contains("удал") || text.Contains("закры") || text.Contains("отмен"))
+            kind = UiIconKind.Delete;
+        else if (text.Contains("останов") || text.Contains("стоп"))
+            kind = UiIconKind.Stop;
+        else if (text.Contains("выключ") || text.Contains("перез") || text.Contains("restart") || text.Contains("suspend"))
+            kind = UiIconKind.Power;
+        else if (text.Contains("поиск") || text.Contains("найти") || text.Contains("scan"))
+            kind = UiIconKind.Search;
+        else if (text.Contains("rdp"))
+            kind = UiIconKind.Rdp;
+        else if (text.Contains("подключ"))
+            kind = UiIconKind.Connect;
+        else if (text.Contains("сеть") || text.Contains("ping") || text.Contains("tracert"))
+            kind = UiIconKind.Network;
+        else if (text.Contains("вверх"))
+            kind = UiIconKind.Up;
+        else if (text.Contains("назад"))
+            kind = UiIconKind.Back;
+        else if (text.Contains("папк") || text.Contains("explorer") || text.Contains("откры"))
+            kind = UiIconKind.FolderOpen;
+        else if (text.Contains("переимен") || text.Contains("измен") || text.Contains("записать"))
+            kind = UiIconKind.Edit;
+        else if (text.Contains("добав") || text.Contains("создать"))
+            kind = UiIconKind.Add;
+        else if (text.Contains("принтер") || text.Contains("печать"))
+            kind = UiIconKind.Printer;
+        else if (text.Contains("сертифик") || text.Contains("ключ"))
+            kind = UiIconKind.Key;
+        else if (text.Contains("пользоват") || text.Contains("учет") || text.Contains("учёт"))
+            kind = UiIconKind.Users;
+        else if (text.Contains("систем") || text.Contains("компьют") || text.Contains("пк"))
+            kind = UiIconKind.Computer;
+        else if (text.Contains("настрой") || text.Contains("политик"))
+            kind = UiIconKind.Settings;
+        else if (text.Contains("обнов"))
+            kind = UiIconKind.Refresh;
+        else if (text.Contains("информа") || text.Contains("диагност"))
+            kind = UiIconKind.Info;
+        else if (text.Contains("скрипт") || text.Contains("powershell"))
+            kind = UiIconKind.Script;
+        else if (text.Contains("выполн") || text.Contains("запуст") || text.Contains("включ"))
+            kind = UiIconKind.Play;
+        else
+            kind = UiIconKind.Application;
+
+        return UiIconFactory.Get(kind, 16);
     }
 
     private static void MirrorToolbarToGridContextMenu(DataGridView grid, Control toolbar)
@@ -1601,7 +1785,7 @@ $boot=$os.LastBootUpTime
     private void RestoreFromTray()
     {
         Show();
-        WindowState = FormWindowState.Normal;
+        WindowState = FormWindowState.Maximized;
         Activate();
     }
 
