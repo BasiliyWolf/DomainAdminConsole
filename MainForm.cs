@@ -92,13 +92,11 @@ public sealed partial class MainForm : Form
         top.Controls.Add(_connectionStatus);
         top.Controls.Add(_domainStatus);
 
-        var split = new SplitContainer
-        {
-            Dock = DockStyle.Fill,
-            SplitterDistance = 390,
-            Panel1MinSize = 300,
-            Panel2MinSize = 600
-        };
+        var split = CreateSafeSplitContainer(
+            Orientation.Vertical,
+            desiredDistance: 390,
+            panel1MinSize: 300,
+            panel2MinSize: 600);
 
         split.Panel1.Controls.Add(BuildDomainPanel());
         split.Panel2.Controls.Add(_tabs);
@@ -175,7 +173,7 @@ public sealed partial class MainForm : Form
     private TabPage BuildOverviewTab()
     {
         var tab = new TabPage("Обзор");
-        var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, SplitterDistance = 270 };
+        var split = CreateSafeSplitContainer(Orientation.Horizontal, desiredDistance: 270);
         var diskPanel = new Panel { Dock = DockStyle.Fill };
         var refresh = Button("Обновить", async (_, _) => await RefreshOverviewAsync());
         refresh.Dock = DockStyle.Top;
@@ -289,7 +287,7 @@ public sealed partial class MainForm : Form
     private TabPage BuildDomainSearchTab()
     {
         var tab = new TabPage("Поиск в домене");
-        var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, SplitterDistance = 390 };
+        var split = CreateSafeSplitContainer(Orientation.Horizontal, desiredDistance: 390);
 
         var userToPcPanel = new Panel { Dock = DockStyle.Fill };
         var userBar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 43, Padding = new Padding(4) };
@@ -819,6 +817,65 @@ quser 2>&1
         if (_remote.IsConnected) return true;
         MessageBox.Show("Сначала подключитесь к удаленному ПК.", "Domain Admin Console", MessageBoxButtons.OK, MessageBoxIcon.Information);
         return false;
+    }
+
+    /// <summary>
+    /// Creates a SplitContainer without assigning SplitterDistance while the control
+    /// still has its design-time/default size. WinForms validates SplitterDistance
+    /// immediately, so assigning it in an object initializer can throw before Dock
+    /// layout gives the control its real size.
+    /// </summary>
+    private static SplitContainer CreateSafeSplitContainer(
+        Orientation orientation,
+        int desiredDistance,
+        int panel1MinSize = 100,
+        int panel2MinSize = 100)
+    {
+        var split = new SplitContainer
+        {
+            Dock = DockStyle.Fill,
+            Orientation = orientation,
+            SplitterWidth = 6
+        };
+
+        var configured = false;
+
+        void ApplyLayoutIfPossible()
+        {
+            if (configured || split.IsDisposed)
+                return;
+
+            var totalSize = orientation == Orientation.Vertical
+                ? split.ClientSize.Width
+                : split.ClientSize.Height;
+
+            // Wait until Dock layout has provided enough real space.
+            if (totalSize <= panel1MinSize + panel2MinSize + split.SplitterWidth)
+                return;
+
+            var maxDistance = totalSize - panel2MinSize - split.SplitterWidth;
+            if (maxDistance < panel1MinSize)
+                return;
+
+            var distance = Math.Clamp(desiredDistance, panel1MinSize, maxDistance);
+
+            // Set the distance first while WinForms still uses its default minimums,
+            // then apply our minimum sizes. At this point both panels already fit.
+            split.SplitterDistance = distance;
+            split.Panel1MinSize = panel1MinSize;
+            split.Panel2MinSize = panel2MinSize;
+            configured = true;
+        }
+
+        split.SizeChanged += (_, _) => ApplyLayoutIfPossible();
+        split.VisibleChanged += (_, _) => ApplyLayoutIfPossible();
+        split.HandleCreated += (_, _) =>
+        {
+            if (!split.IsDisposed && split.IsHandleCreated)
+                split.BeginInvoke(new Action(ApplyLayoutIfPossible));
+        };
+
+        return split;
     }
 
     private static DataGridView Grid() => new()

@@ -62,8 +62,7 @@ public sealed partial class MainForm
     private TabPage BuildFirewallTab()
     {
         var tab = new TabPage("Firewall");
-        var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal };
-        split.SplitterDistance = 220;
+        var split = CreateSafeSplitContainer(Orientation.Horizontal, desiredDistance: 220);
 
         var top = new Panel { Dock = DockStyle.Fill };
         var topBar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 42, Padding = new Padding(4) };
@@ -94,8 +93,7 @@ public sealed partial class MainForm
     private TabPage BuildSmbTab()
     {
         var tab = new TabPage("SMB Sessions / Files");
-        var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal };
-        split.SplitterDistance = 350;
+        var split = CreateSafeSplitContainer(Orientation.Horizontal, desiredDistance: 350);
         var top = new Panel { Dock = DockStyle.Fill };
         var topBar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 42, Padding = new Padding(4) };
         topBar.Controls.Add(Button("Обновить", async (_, _) => await RefreshSmbAsync()));
@@ -131,8 +129,7 @@ public sealed partial class MainForm
     private TabPage BuildScriptLibraryTab()
     {
         var tab = new TabPage("PowerShell-скрипты");
-        var split = new SplitContainer { Dock = DockStyle.Fill };
-        split.SplitterDistance = 380;
+        var split = CreateSafeSplitContainer(Orientation.Vertical, desiredDistance: 380);
 
         var left = new Panel { Dock = DockStyle.Fill };
         var leftBar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 76, Padding = new Padding(4), WrapContents = true };

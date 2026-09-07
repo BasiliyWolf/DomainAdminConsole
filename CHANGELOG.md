@@ -44,3 +44,8 @@
 - Поиск пользователь → ПК по всему домену.
 - ПК → пользователи.
 - Базовые административные утилиты и tray.
+
+### 0.3.0 hotfix — SplitContainer initialization
+- Исправлено `System.InvalidOperationException: Параметр SplitterDistance должен быть в границах Panel1MinSize и Width - Panel2MinSize`.
+- Все `SplitContainer` теперь получают `SplitterDistance` только после фактической раскладки WinForms.
+- Исправление применено к главному окну и всем вкладкам v0.2/v0.3, использующим разделители.

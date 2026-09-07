@@ -178,7 +178,7 @@ public sealed partial class MainForm
         bar.Controls.Add(Button("Убрать из админов", async (_, _) => await ChangeLocalAdminMembershipAsync(false), 140));
         bar.Controls.Add(Button("Включить учётку", async (_, _) => await ToggleSelectedLocalUserAsync(true), 125));
         bar.Controls.Add(Button("Отключить учётку", async (_, _) => await ToggleSelectedLocalUserAsync(false), 135));
-        var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, SplitterDistance = 360 };
+        var split = CreateSafeSplitContainer(Orientation.Horizontal, desiredDistance: 360);
         var usersPanel = new Panel { Dock = DockStyle.Fill };
         usersPanel.Controls.Add(_accountsGrid);
         usersPanel.Controls.Add(bar);
@@ -191,7 +191,7 @@ public sealed partial class MainForm
     private TabPage BuildNetworkConfigTab()
     {
         var tab = new TabPage("Сеть ПК");
-        var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, SplitterDistance = 330 };
+        var split = CreateSafeSplitContainer(Orientation.Horizontal, desiredDistance: 330);
 
         var adapterPanel = new Panel { Dock = DockStyle.Fill };
         var adapterBar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 42, Padding = new Padding(4) };
@@ -212,7 +212,7 @@ public sealed partial class MainForm
     private TabPage BuildWindowsUpdateTab()
     {
         var tab = new TabPage("Windows Update");
-        var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, SplitterDistance = 280 };
+        var split = CreateSafeSplitContainer(Orientation.Horizontal, desiredDistance: 280);
 
         var top = new Panel { Dock = DockStyle.Fill };
         var bar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 42, Padding = new Padding(4) };
@@ -223,7 +223,7 @@ public sealed partial class MainForm
         top.Controls.Add(_hotfixGrid);
         top.Controls.Add(bar);
 
-        var bottom = new SplitContainer { Dock = DockStyle.Fill, SplitterDistance = 520 };
+        var bottom = CreateSafeSplitContainer(Orientation.Vertical, desiredDistance: 520);
         bottom.Panel1.Controls.Add(_pendingUpdateGrid);
         bottom.Panel2.Controls.Add(_updateStatus);
 

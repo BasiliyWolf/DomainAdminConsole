@@ -142,8 +142,7 @@ public sealed partial class MainForm
     private TabPage BuildBulkTab()
     {
         var tab = new TabPage("Массовые действия");
-        var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal };
-        split.SplitterDistance = 430;
+        var split = CreateSafeSplitContainer(Orientation.Horizontal, desiredDistance: 430);
         var top = new Panel { Dock = DockStyle.Fill };
         var bar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 110, Padding = new Padding(4), WrapContents = true };
         bar.Controls.Add(Button("Активные ПК", (_, _) => LoadBulkTargets(true), 105));
@@ -189,8 +188,7 @@ public sealed partial class MainForm
     private TabPage BuildBitLockerTpmTab()
     {
         var tab = new TabPage("BitLocker / TPM");
-        var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal };
-        split.SplitterDistance = 390;
+        var split = CreateSafeSplitContainer(Orientation.Horizontal, desiredDistance: 390);
         var top = new Panel { Dock = DockStyle.Fill };
         var bar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 42, Padding = new Padding(4) };
         bar.Controls.Add(Button("Обновить", async (_, _) => await RefreshBitLockerTpmAsync()));
@@ -207,8 +205,7 @@ public sealed partial class MainForm
     private TabPage BuildPrintersTab()
     {
         var tab = new TabPage("Принтеры");
-        var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal };
-        split.SplitterDistance = 380;
+        var split = CreateSafeSplitContainer(Orientation.Horizontal, desiredDistance: 380);
         var p1 = new Panel { Dock = DockStyle.Fill };
         var bar1 = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 42, Padding = new Padding(4) };
         bar1.Controls.Add(Button("Обновить", async (_, _) => await RefreshPrintersAsync()));
