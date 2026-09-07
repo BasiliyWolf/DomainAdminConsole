@@ -1,8 +1,11 @@
 using System.Management.Automation;
 using System.Management.Automation.Runspaces;
+using System.Globalization;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 
 namespace DomainAdminConsole.Services;
 
@@ -104,6 +107,40 @@ public sealed class RemotePowerShellService : IDisposable
         {
             _gate.Release();
         }
+    }
+
+
+    public async Task<string> ExecuteNativeProcessAsync(
+        string fileName,
+        string arguments = "",
+        CancellationToken cancellationToken = default)
+    {
+        var safeFile = fileName.Replace("'", "''");
+        var safeArgs = arguments.Replace("'", "''");
+        var script = $@"
+$psi = New-Object System.Diagnostics.ProcessStartInfo
+$psi.FileName = '{safeFile}'
+$psi.Arguments = '{safeArgs}'
+$psi.UseShellExecute = $false
+$psi.CreateNoWindow = $true
+$psi.RedirectStandardOutput = $true
+$psi.RedirectStandardError = $true
+try {{
+    $oem = [System.Text.Encoding]::GetEncoding([System.Globalization.CultureInfo]::CurrentCulture.TextInfo.OEMCodePage)
+    $psi.StandardOutputEncoding = $oem
+    $psi.StandardErrorEncoding = $oem
+}} catch {{ }}
+$p = New-Object System.Diagnostics.Process
+$p.StartInfo = $psi
+[void]$p.Start()
+$stdout = $p.StandardOutput.ReadToEnd()
+$stderr = $p.StandardError.ReadToEnd()
+$p.WaitForExit()
+$stdout
+if($stderr) {{ $stderr }}
+if($p.ExitCode -ne 0) {{ throw '{safeFile} exit code ' + $p.ExitCode }}
+";
+        return await ExecuteTextAsync(script, cancellationToken);
     }
 
     public async Task<T?> ExecuteJsonAsync<T>(string script, CancellationToken cancellationToken = default)
@@ -326,8 +363,46 @@ public sealed class RemotePowerShellService : IDisposable
         _gate.Dispose();
     }
 
-    private static readonly JsonSerializerOptions JsonOptions = new()
+    private static readonly JsonSerializerOptions JsonOptions = CreateJsonOptions();
+
+    private static JsonSerializerOptions CreateJsonOptions()
     {
-        PropertyNameCaseInsensitive = true
-    };
+        var options = new JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true
+        };
+        options.Converters.Add(new FlexibleDateTimeConverter());
+        return options;
+    }
+
+    private sealed class FlexibleDateTimeConverter : JsonConverter<DateTime>
+    {
+        private static readonly Regex PowerShellDate = new(@"^/Date\(([-+]?\d+)([-+]\d{4})?\)/$", RegexOptions.Compiled);
+
+        public override DateTime Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            if (reader.TokenType == JsonTokenType.String)
+            {
+                var value = reader.GetString() ?? string.Empty;
+                var match = PowerShellDate.Match(value);
+                if (match.Success && long.TryParse(match.Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var ms))
+                    return DateTimeOffset.FromUnixTimeMilliseconds(ms).LocalDateTime;
+
+                if (DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AllowWhiteSpaces | DateTimeStyles.RoundtripKind, out var dto))
+                    return dto.LocalDateTime;
+
+                if (DateTime.TryParse(value, CultureInfo.CurrentCulture, DateTimeStyles.AllowWhiteSpaces, out var local))
+                    return local;
+            }
+            else if (reader.TokenType == JsonTokenType.Number && reader.TryGetInt64(out var numeric))
+            {
+                return DateTimeOffset.FromUnixTimeMilliseconds(numeric).LocalDateTime;
+            }
+
+            throw new JsonException("Не удалось преобразовать значение даты/времени из PowerShell JSON.");
+        }
+
+        public override void Write(Utf8JsonWriter writer, DateTime value, JsonSerializerOptions options)
+            => writer.WriteStringValue(value.ToString("O", CultureInfo.InvariantCulture));
+    }
 }

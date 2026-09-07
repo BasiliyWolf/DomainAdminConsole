@@ -15,7 +15,13 @@ public sealed class DomainComputer
     public bool SmbAvailable { get; set; }
     public bool RdpAvailable { get; set; }
     public string Users { get; set; } = "";
+    public bool ProbeCompleted { get; set; }
     public bool IsActive => PingOnline || WinRmAvailable || SmbAvailable || RdpAvailable;
+    public string StatusText => !ProbeCompleted ? "Проверка…" : IsActive ? "● ONLINE" : "● OFFLINE";
+    public string PingText => !ProbeCompleted ? "…" : PingOnline ? "● OK" : "● Нет";
+    public string WinRmText => !ProbeCompleted ? "…" : WinRmAvailable ? "● OK" : "● Нет";
+    public string SmbText => !ProbeCompleted ? "…" : SmbAvailable ? "● OK" : "● Нет";
+    public string RdpText => !ProbeCompleted ? "…" : RdpAvailable ? "● OK" : "● Нет";
 }
 
 public sealed class DiskInfo
@@ -49,6 +55,7 @@ public sealed class PortInfo
     public string Protocol { get; set; } = "";
     public string LocalAddress { get; set; } = "";
     public int LocalPort { get; set; }
+    public string Description { get; set; } = "";
     public string Process { get; set; } = "";
     public int Pid { get; set; }
 }

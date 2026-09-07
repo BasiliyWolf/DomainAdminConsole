@@ -17,14 +17,9 @@ public sealed partial class MainForm
     private List<FileManagerEntry> _localFiles = [];
     private List<FileManagerEntry> _remoteFiles = [];
 
-    private readonly BindingList<BulkTarget> _bulkTargets = [];
-    private readonly BindingList<BulkResult> _bulkResults = [];
-    private readonly DataGridView _bulkTargetsGrid = new()
-    {
-        Dock = DockStyle.Fill, AllowUserToAddRows = false, AllowUserToDeleteRows = false,
-        SelectionMode = DataGridViewSelectionMode.FullRowSelect, MultiSelect = true,
-        AutoGenerateColumns = false, RowHeadersVisible = false, BackgroundColor = SystemColors.Window
-    };
+    private readonly SortableBindingList<BulkTarget> _bulkTargets = [];
+    private readonly SortableBindingList<BulkResult> _bulkResults = [];
+    private readonly DataGridView _bulkTargetsGrid = Grid(readOnly: false, multiSelect: true, autoGenerateColumns: false);
     private readonly DataGridView _bulkResultsGrid = Grid();
     private readonly ComboBox _bulkAction = new() { Width = 200, DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly ComboBox _bulkFavoriteGroup = new() { Width = 160, DropDownStyle = ComboBoxStyle.DropDownList };
@@ -33,7 +28,7 @@ public sealed partial class MainForm
     private readonly Label _bulkStatus = new() { AutoSize = true, Padding = new Padding(8, 7, 0, 0) };
     private CancellationTokenSource? _bulkCts;
 
-    private readonly BindingList<KnownMacInfo> _knownMacs = [];
+    private readonly SortableBindingList<KnownMacInfo> _knownMacs = [];
     private readonly DataGridView _wolGrid = Grid();
     private readonly TextBox _wolMac = new() { Width = 180, PlaceholderText = "AA-BB-CC-DD-EE-FF" };
     private readonly TextBox _wolBroadcast = new() { Width = 150, Text = "255.255.255.255" };
@@ -238,7 +233,7 @@ public sealed partial class MainForm
                     Name = x.Name, FullName = x.FullName, IsDirectory = x is DirectoryInfo,
                     SizeBytes = x is FileInfo f ? f.Length : 0, LastWriteTime = x.LastWriteTime
                 }).ToList();
-            _localFilesGrid.DataSource = _localFiles;
+            BindGrid(_localFilesGrid, _localFiles);
         }
         catch (Exception ex) { ShowError(ex); }
     }
@@ -264,10 +259,10 @@ public sealed partial class MainForm
         {
             _remoteFiles = await _remote.ExecuteJsonListAsync<FileManagerEntry>($@"
 Get-ChildItem -LiteralPath '{PsQuote(path)}' -Force -ErrorAction Stop | Sort-Object @{{Expression={{-not $_.PSIsContainer}}}},Name | ForEach-Object {{
- [pscustomobject]@{{Name=$_.Name;FullName=$_.FullName;IsDirectory=$_.PSIsContainer;SizeBytes=if($_.PSIsContainer){{0}}else{{$_.Length}};LastWriteTime=$_.LastWriteTime}}
+ [pscustomobject]@{{Name=$_.Name;FullName=$_.FullName;IsDirectory=$_.PSIsContainer;SizeBytes=if($_.PSIsContainer){{0}}else{{$_.Length}};LastWriteTime=if($_.LastWriteTime){{$_.LastWriteTime.ToString('o')}}else{{$null}}}}
 }}
 ");
-            _remoteFilesGrid.DataSource = _remoteFiles;
+            BindGrid(_remoteFilesGrid, _remoteFiles);
             WriteAudit("files.list", path, true);
         }
         catch (Exception ex) { WriteAudit("files.list", ex.Message, false); ShowError(ex); }
@@ -562,13 +557,13 @@ Get-ChildItem -LiteralPath '{PsQuote(path)}' -Force -ErrorAction Stop | Sort-Obj
         if (!EnsureConnected()) return;
         try
         {
-            _bitLockerGrid.DataSource = await _remote.ExecuteJsonListAsync<BitLockerVolumeInfo>(@"
+            BindGrid(_bitLockerGrid, await _remote.ExecuteJsonListAsync<BitLockerVolumeInfo>(@"
 if(Get-Command Get-BitLockerVolume -ErrorAction SilentlyContinue){
  Get-BitLockerVolume | ForEach-Object {
   [pscustomobject]@{MountPoint=$_.MountPoint;VolumeType=[string]$_.VolumeType;VolumeStatus=[string]$_.VolumeStatus;ProtectionStatus=[string]$_.ProtectionStatus;LockStatus=[string]$_.LockStatus;EncryptionMethod=[string]$_.EncryptionMethod;EncryptionPercentage=[double]$_.EncryptionPercentage;KeyProtectors=(($_.KeyProtector | ForEach-Object {[string]$_.KeyProtectorType}) -join ', ')}
  }
 }
-");
+"));
             _tpmInfo.Text = await _remote.ExecuteTextAsync(@"
 '=== TPM ==='
 if(Get-Command Get-Tpm -ErrorAction SilentlyContinue){ Get-Tpm | Format-List TpmPresent,TpmReady,TpmEnabled,TpmActivated,TpmOwned,RestartPending,ManufacturerIdTxt,ManufacturerVersion,ManagedAuthLevel }
@@ -604,13 +599,13 @@ Get-CimInstance -Namespace root/cimv2/security/microsofttpm -ClassName Win32_Tpm
         if (!EnsureConnected()) return;
         try
         {
-            _printersGrid.DataSource = await _remote.ExecuteJsonListAsync<PrinterInfoRow>(@"
+            BindGrid(_printersGrid, await _remote.ExecuteJsonListAsync<PrinterInfoRow>(@"
 if(Get-Command Get-Printer -ErrorAction SilentlyContinue){
  Get-Printer | Sort-Object Name | ForEach-Object { [pscustomobject]@{Name=$_.Name;DriverName=$_.DriverName;PortName=$_.PortName;Shared=[bool]$_.Shared;ShareName=$_.ShareName;Type=[string]$_.Type;PrinterStatus=[string]$_.PrinterStatus} }
 }else{
  Get-CimInstance Win32_Printer | Sort-Object Name | ForEach-Object { [pscustomobject]@{Name=$_.Name;DriverName=$_.DriverName;PortName=$_.PortName;Shared=[bool]$_.Shared;ShareName=$_.ShareName;Type='';PrinterStatus=[string]$_.PrinterStatus} }
 }
-");
+"));
             WriteAudit("printers.list", "Список принтеров", true);
         }
         catch (Exception ex) { WriteAudit("printers.list", ex.Message, false); ShowError(ex); }
@@ -635,7 +630,7 @@ if(Get-Command Get-PrintJob -ErrorAction SilentlyContinue){{
  Get-PrintJob -PrinterName '{PsQuote(printer.Name)}' -ErrorAction SilentlyContinue | ForEach-Object {{ [pscustomobject]@{{Id=$_.Id;PrinterName='{PsQuote(printer.Name)}';DocumentName=$_.DocumentName;UserName=$_.UserName;JobStatus=[string]$_.JobStatus;PagesPrinted=$_.PagesPrinted;TotalPages=$_.TotalPages;Size=$_.Size}} }}
 }}
 ";
-            _printJobsGrid.DataSource = await _remote.ExecuteJsonListAsync<PrintJobInfoRow>(script);
+            BindGrid(_printJobsGrid, await _remote.ExecuteJsonListAsync<PrintJobInfoRow>(script));
             WriteAudit("printers.jobs", printer?.Name ?? "Все принтеры", true);
         }
         catch (Exception ex) { WriteAudit("printers.jobs", ex.Message, false); ShowError(ex); }

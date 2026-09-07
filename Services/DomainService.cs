@@ -8,6 +8,28 @@ namespace DomainAdminConsole.Services;
 
 public sealed class DomainService
 {
+    private const string NormalizedUsersScript = @"
+$map=@{}
+function Add-DacUser([string]$value){
+ if([string]::IsNullOrWhiteSpace($value)){ return }
+ $value=$value.Trim()
+ $short=($value -split '\\')[-1].Trim()
+ if([string]::IsNullOrWhiteSpace($short)){ return }
+ $key=$short.ToLowerInvariant()
+ if((-not $map.ContainsKey($key)) -or (($value -like '*\*') -and ($map[$key] -notlike '*\*'))){ $map[$key]=$value }
+}
+$console=(Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue).UserName
+Add-DacUser $console
+$q=& quser 2>$null
+if($q){
+ $q | Select-Object -Skip 1 | ForEach-Object {
+  $line=($_ -replace '^>','').Trim()
+  if($line){ $parts=$line -split '\s+'; if($parts.Count -gt 0){ Add-DacUser $parts[0] } }
+ }
+}
+($map.Values | Sort-Object) -join ', '
+";
+
     public string GetCurrentDomainName()
     {
         using var root = new DirectoryEntry("LDAP://RootDSE");
@@ -92,28 +114,17 @@ public sealed class DomainService
                 {
                     try
                     {
-                        const string usersScript = @"
-$users=@()
-$console=(Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue).UserName
-if($console){$users+=$console}
-$q=& quser 2>$null
-if($q){
- $q | Select-Object -Skip 1 | ForEach-Object {
-  $line=($_ -replace '^>','').Trim()
-  if($line){ $parts=$line -split '\s+'; if($parts.Count -gt 0){$users+=$parts[0]} }
- }
-}
-($users | Where-Object {$_} | Sort-Object -Unique) -join ', '
-";
-                        computer.Users = (await RemotePowerShellService.ExecuteOneShotTextAsync(host, usersScript, 8000, null, cancellationToken)).Trim();
+                        computer.Users = await GetLoggedOnUsersTextAsync(host, cancellationToken);
                     }
                     catch { }
                 }
+                computer.ProbeCompleted = true;
                 progress?.Report(computer);
             }
             catch (OperationCanceledException) { throw; }
             catch
             {
+                computer.ProbeCompleted = true;
                 progress?.Report(computer);
             }
             finally
@@ -151,21 +162,16 @@ if($q){
                 {
                     try
                     {
-                        const string script = @"
-$console = (Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue).UserName
-$q = (& quser 2>$null | Out-String)
-[pscustomobject]@{ ConsoleUser=$console; QUser=$q } | ConvertTo-Json -Compress
-";
-                        var raw = await RemotePowerShellService.ExecuteOneShotTextAsync(host, script, 7000, null, cancellationToken);
-                        if (raw.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0)
+                        var users = await GetLoggedOnUsersTextAsync(host, cancellationToken);
+                        if (users.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0)
                         {
                             found.Add(new SessionInfo
                             {
                                 Computer = computer.Name,
-                                User = userSearch,
+                                User = users,
                                 Session = "Console/RDP",
                                 State = "Найден (WinRM)",
-                                Raw = raw.Trim()
+                                Raw = users
                             });
                             matched = true;
                         }
@@ -206,42 +212,89 @@ $q = (& quser 2>$null | Out-String)
         return found.OrderBy(x => x.Computer).ToList();
     }
 
-    public async Task<List<SessionInfo>> GetUsersOnComputerAsync(string host, CancellationToken cancellationToken = default)
+    public async Task<string> GetLoggedOnUsersTextAsync(string host, CancellationToken cancellationToken = default)
     {
-        try
-        {
-            const string script = @"
-$console = (Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue).UserName
-$q = (& quser 2>$null | Out-String)
-[pscustomobject]@{ ConsoleUser=$console; QUser=$q } | ConvertTo-Json -Compress
-";
-            var raw = await RemotePowerShellService.ExecuteOneShotTextAsync(host, script, 7000, null, cancellationToken);
-            return [new SessionInfo { Computer = host, User = ExtractJsonValue(raw, "ConsoleUser"), Session = "Console/RDP", State = "WinRM", Raw = raw.Trim() }];
-        }
-        catch
-        {
-            var wts = await RdpSessionService.GetSessionsAsync(host, cancellationToken).WaitAsync(TimeSpan.FromSeconds(4), cancellationToken);
-            return wts.Select(x => new SessionInfo
-            {
-                Computer = host,
-                User = x.UserDisplay,
-                Session = $"{x.StationName} / ID {x.Id}",
-                State = x.State,
-                Raw = $"WTS session {x.Id}"
-            }).ToList();
-        }
+        var raw = (await RemotePowerShellService.ExecuteOneShotTextAsync(
+            host, NormalizedUsersScript, 9000, null, cancellationToken)).Trim();
+        return NormalizeUsers(raw);
     }
 
-    private static string ExtractJsonValue(string json, string name)
+    private static string NormalizeUsers(string raw)
     {
+        if (string.IsNullOrWhiteSpace(raw)) return string.Empty;
+
+        var users = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var token in raw.Split([',', ';', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var value = token.Trim().TrimStart('>');
+            if (string.IsNullOrWhiteSpace(value)) continue;
+
+            var slash = value.LastIndexOf('\\');
+            var shortName = slash >= 0 && slash + 1 < value.Length ? value[(slash + 1)..] : value;
+            shortName = shortName.Trim();
+            if (string.IsNullOrWhiteSpace(shortName)) continue;
+
+            if (!users.TryGetValue(shortName, out var current) ||
+                (value.Contains('\\') && !current.Contains('\\')))
+            {
+                users[shortName] = value;
+            }
+        }
+
+        return string.Join(", ", users.Values.OrderBy(x => x, StringComparer.CurrentCultureIgnoreCase));
+    }
+
+    public async Task<List<SessionInfo>> GetUsersOnComputerAsync(string host, CancellationToken cancellationToken = default)
+    {
+        var result = new List<SessionInfo>();
         try
         {
-            using var doc = System.Text.Json.JsonDocument.Parse(json.Trim());
-            if (doc.RootElement.TryGetProperty(name, out var value))
-                return value.GetString() ?? "";
+            var sessions = await RdpSessionService.GetSessionsAsync(host, cancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+            foreach (var session in sessions
+                         .GroupBy(x => x.UserDisplay, StringComparer.OrdinalIgnoreCase)
+                         .Select(g => g.First()))
+            {
+                result.Add(new SessionInfo
+                {
+                    Computer = host,
+                    User = session.UserDisplay,
+                    Session = $"{session.StationName} / ID {session.Id}",
+                    State = session.State,
+                    Raw = $"WTS session {session.Id}"
+                });
+            }
         }
         catch { }
-        return "";
+
+        try
+        {
+            var users = await GetLoggedOnUsersTextAsync(host, cancellationToken);
+            foreach (var user in users.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                var shortName = user.Contains('\\') ? user[(user.LastIndexOf('\\') + 1)..] : user;
+                if (result.Any(x =>
+                    x.User.Equals(user, StringComparison.OrdinalIgnoreCase) ||
+                    x.User.EndsWith("\\" + shortName, StringComparison.OrdinalIgnoreCase) ||
+                    x.User.Equals(shortName, StringComparison.OrdinalIgnoreCase)))
+                    continue;
+
+                result.Add(new SessionInfo
+                {
+                    Computer = host,
+                    User = user,
+                    Session = "Console",
+                    State = "Active",
+                    Raw = "WinRM console user"
+                });
+            }
+        }
+        catch when (result.Count > 0) { }
+
+        if (result.Count == 0)
+            throw new InvalidOperationException($"Не удалось получить пользовательские сеансы на {host}.");
+
+        return result.OrderBy(x => x.User, StringComparer.OrdinalIgnoreCase).ThenBy(x => x.Session).ToList();
     }
 
     private static async Task<bool> IsPingAliveAsync(string host, int timeoutMs, CancellationToken ct)

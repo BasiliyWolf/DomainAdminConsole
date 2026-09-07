@@ -8,7 +8,7 @@ namespace DomainAdminConsole;
 public sealed partial class MainForm
 {
     private readonly AppDataStore _appData = new();
-    private readonly BindingList<FavoriteComputer> _favorites = [];
+    private readonly SortableBindingList<FavoriteComputer> _favorites = [];
 
     private readonly DataGridView _favoritesGrid = Grid();
     private readonly ComboBox _favoriteGroupFilter = new() { Width = 160, DropDownStyle = ComboBoxStyle.DropDownList };
@@ -196,8 +196,8 @@ public sealed partial class MainForm
         var adapterPanel = new Panel { Dock = DockStyle.Fill };
         var adapterBar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 42, Padding = new Padding(4) };
         adapterBar.Controls.Add(Button("Обновить", async (_, _) => await RefreshNetworkConfigurationAsync()));
-        adapterBar.Controls.Add(Button("Flush DNS", async (_, _) => await RunUtilityAsync("ipconfig /flushdns"), 105));
-        adapterBar.Controls.Add(Button("Register DNS", async (_, _) => await RunUtilityAsync("ipconfig /registerdns"), 115));
+        adapterBar.Controls.Add(Button("Flush DNS", async (_, _) => await RunNativeUtilityAsync("ipconfig.exe", "/flushdns", "ipconfig /flushdns"), 105));
+        adapterBar.Controls.Add(Button("Register DNS", async (_, _) => await RunNativeUtilityAsync("ipconfig.exe", "/registerdns", "ipconfig /registerdns"), 115));
         adapterPanel.Controls.Add(_adapterGrid);
         adapterPanel.Controls.Add(adapterBar);
 
@@ -247,25 +247,39 @@ public sealed partial class MainForm
 
     private void ConfigureDomainContextMenu()
     {
-        var menu = new ContextMenuStrip();
-        menu.Items.Add("Подключиться", null, async (_, _) =>
+        var menu = _domainGrid.ContextMenuStrip ?? CreateGridContextMenu(_domainGrid);
+
+        var connectItem = new ToolStripMenuItem("Подключиться");
+        connectItem.Click += async (_, _) =>
         {
             if (_domainGrid.CurrentRow?.DataBoundItem is not DomainComputer pc) return;
             var host = string.IsNullOrWhiteSpace(pc.DnsHostName) ? pc.Name : pc.DnsHostName;
             _target.Text = host;
             await ConnectAsync(host);
-        });
-        menu.Items.Add("Добавить в избранное", null, (_, _) => AddDomainComputerToFavorites());
-        menu.Items.Add("RDP", null, (_, _) =>
+        };
+
+        var favoriteItem = new ToolStripMenuItem("Добавить в избранное");
+        favoriteItem.Click += (_, _) => AddDomainComputerToFavorites();
+
+        var rdpItem = new ToolStripMenuItem("RDP");
+        rdpItem.Click += (_, _) =>
         {
             if (_domainGrid.CurrentRow?.DataBoundItem is DomainComputer pc)
                 LaunchLocal("mstsc.exe", $"/v:{(string.IsNullOrWhiteSpace(pc.DnsHostName) ? pc.Name : pc.DnsHostName)}");
-        });
-        menu.Items.Add("Открыть C$", null, (_, _) =>
+        };
+
+        var shareItem = new ToolStripMenuItem("Открыть C$");
+        shareItem.Click += (_, _) =>
         {
             if (_domainGrid.CurrentRow?.DataBoundItem is DomainComputer pc)
                 LaunchLocal("explorer.exe", $@"\\{(string.IsNullOrWhiteSpace(pc.DnsHostName) ? pc.Name : pc.DnsHostName)}\c$");
-        });
+        };
+
+        menu.Items.Insert(0, new ToolStripSeparator());
+        menu.Items.Insert(0, shareItem);
+        menu.Items.Insert(0, rdpItem);
+        menu.Items.Insert(0, favoriteItem);
+        menu.Items.Insert(0, connectItem);
         _domainGrid.ContextMenuStrip = menu;
     }
 
@@ -395,7 +409,7 @@ public sealed partial class MainForm
         var group = _favoriteGroupFilter.SelectedItem?.ToString();
         _favoritesGrid.DataSource = string.IsNullOrWhiteSpace(group) || group == "Все группы"
             ? _favorites
-            : new BindingList<FavoriteComputer>(_favorites.Where(x => x.Group.Equals(group, StringComparison.OrdinalIgnoreCase)).ToList());
+            : new SortableBindingList<FavoriteComputer>(_favorites.Where(x => x.Group.Equals(group, StringComparison.OrdinalIgnoreCase)).ToList());
     }
 
     private async Task RefreshShadowSessionsAsync()
@@ -404,7 +418,7 @@ public sealed partial class MainForm
         if (string.IsNullOrWhiteSpace(host)) return;
         try
         {
-            _shadowGrid.DataSource = await RdpSessionService.GetSessionsAsync(host);
+            BindGrid(_shadowGrid, await RdpSessionService.GetSessionsAsync(host));
             WriteAudit("rdp.sessions", "Получен список терминальных сеансов", true);
         }
         catch (Exception ex)
@@ -431,7 +445,7 @@ public sealed partial class MainForm
         if (string.IsNullOrWhiteSpace(path)) return;
         try
         {
-            _registryGrid.DataSource = await _remote.ExecuteJsonListAsync<RegistryValueRow>($@"
+            BindGrid(_registryGrid, await _remote.ExecuteJsonListAsync<RegistryValueRow>($@"
 $key = Get-Item -LiteralPath '{PsQuote(path)}' -ErrorAction Stop
 Get-ChildItem -LiteralPath '{PsQuote(path)}' -ErrorAction SilentlyContinue | Sort-Object PSChildName | ForEach-Object {{
  [pscustomobject]@{{Name=$_.PSChildName;Type='[Key]';Value='';IsKey=$true}}
@@ -444,7 +458,7 @@ foreach($name in $key.GetValueNames()){{
   [pscustomobject]@{{Name=if($name){{$name}}else{{'(Default)'}};Type=$kind;Value=$text;IsKey=$false}}
  }} catch {{}}
 }}
-");
+"));
             if (_registryGrid.Columns[nameof(RegistryValueRow.IsKey)] is { } isKeyColumn) isKeyColumn.Visible = false;
             WriteAudit("registry.read", path, true);
         }
@@ -513,11 +527,11 @@ foreach($name in $key.GetValueNames()){{
         if (!EnsureConnected()) return;
         try
         {
-            _taskGrid.DataSource = await _remote.ExecuteJsonListAsync<ScheduledTaskInfo>(@"
+            BindGrid(_taskGrid, await _remote.ExecuteJsonListAsync<ScheduledTaskInfo>(@"
 Get-ScheduledTask | Sort-Object TaskPath,TaskName | ForEach-Object {
  [pscustomobject]@{ TaskName=$_.TaskName; TaskPath=$_.TaskPath; State=$_.State.ToString(); Author=$_.Author }
 }
-");
+"));
             WriteAudit("tasks.list", "Получен список заданий", true);
         }
         catch (Exception ex) { WriteAudit("tasks.list", ex.Message, false); ShowError(ex); }
@@ -570,10 +584,10 @@ $items | Sort-Object DisplayName,DisplayVersion -Unique
     private void ApplyAppFilter()
     {
         var f = _appFilter.Text.Trim();
-        _appsGrid.DataSource = _installedApps.Where(x => string.IsNullOrWhiteSpace(f)
+        BindGrid(_appsGrid, _installedApps.Where(x => string.IsNullOrWhiteSpace(f)
             || x.DisplayName.Contains(f, StringComparison.OrdinalIgnoreCase)
             || x.Publisher.Contains(f, StringComparison.OrdinalIgnoreCase)
-            || x.DisplayVersion.Contains(f, StringComparison.OrdinalIgnoreCase)).ToList();
+            || x.DisplayVersion.Contains(f, StringComparison.OrdinalIgnoreCase)).ToList());
         if (_appsGrid.Columns[nameof(InstalledAppInfo.UninstallString)] is { } col) col.Visible = false;
     }
 
@@ -601,7 +615,7 @@ $items | Sort-Object DisplayName,DisplayVersion -Unique
         if (!EnsureConnected()) return;
         try
         {
-            _accountsGrid.DataSource = await _remote.ExecuteJsonListAsync<LocalAccountInfo>(@"
+            BindGrid(_accountsGrid, await _remote.ExecuteJsonListAsync<LocalAccountInfo>(@"
 $adminGroup=(Get-CimInstance Win32_Group -Filter ""LocalAccount=True AND SID='S-1-5-32-544'"" -ErrorAction SilentlyContinue).Name
 $admins=@()
 if($adminGroup){
@@ -619,9 +633,9 @@ if(Get-Command Get-LocalUser -ErrorAction SilentlyContinue){
   [pscustomobject]@{Name=$_.Name;Enabled=(-not $_.Disabled);LastLogon='';Description=$_.Description;IsAdministrator=($admins -contains $_.Name)}
  }
 }
-");
+"));
 
-            _adminMembersGrid.DataSource = await _remote.ExecuteJsonListAsync<LocalGroupMemberInfo>(@"
+            BindGrid(_adminMembersGrid, await _remote.ExecuteJsonListAsync<LocalGroupMemberInfo>(@"
 $adminGroup=(Get-CimInstance Win32_Group -Filter ""LocalAccount=True AND SID='S-1-5-32-544'"" -ErrorAction Stop).Name
 $group=[ADSI](""WinNT://./""+$adminGroup+"",group"")
 $group.psbase.Invoke('Members') | ForEach-Object {
@@ -630,7 +644,7 @@ $group.psbase.Invoke('Members') | ForEach-Object {
  $path=$_.GetType().InvokeMember('ADsPath','GetProperty',$null,$_,$null)
  [pscustomobject]@{Name=$name;ObjectClass=$class;AdsPath=$path}
 }
-");
+"));
             WriteAudit("accounts.list", "Локальные пользователи и члены Administrators", true);
         }
         catch (Exception ex) { WriteAudit("accounts.list", ex.Message, false); ShowError(ex); }
@@ -684,13 +698,13 @@ Get-NetIPConfiguration -ErrorAction SilentlyContinue | ForEach-Object {
  }
 }
 ");
-            _adapterGrid.DataSource = adapters;
+            BindGrid(_adapterGrid, adapters);
             RememberMacs(CurrentHost, adapters);
-            _routeGrid.DataSource = await _remote.ExecuteJsonListAsync<RouteInfo>(@"
+            BindGrid(_routeGrid, await _remote.ExecuteJsonListAsync<RouteInfo>(@"
 Get-NetRoute -AddressFamily IPv4 -ErrorAction SilentlyContinue | Sort-Object DestinationPrefix,RouteMetric | ForEach-Object {
  [pscustomobject]@{DestinationPrefix=$_.DestinationPrefix;NextHop=$_.NextHop;InterfaceAlias=$_.InterfaceAlias;RouteMetric=$_.RouteMetric}
 }
-");
+"));
             WriteAudit("network.config", "Получены адаптеры и IPv4 маршруты", true);
         }
         catch (Exception ex) { WriteAudit("network.config", ex.Message, false); ShowError(ex); }
@@ -701,11 +715,11 @@ Get-NetRoute -AddressFamily IPv4 -ErrorAction SilentlyContinue | Sort-Object Des
         if (!EnsureConnected()) return;
         try
         {
-            _hotfixGrid.DataSource = await _remote.ExecuteJsonListAsync<HotFixInfo>(@"
+            BindGrid(_hotfixGrid, await _remote.ExecuteJsonListAsync<HotFixInfo>(@"
 Get-HotFix -ErrorAction SilentlyContinue | Sort-Object InstalledOn -Descending | Select-Object -First 200 | ForEach-Object {
  [pscustomobject]@{HotFixId=$_.HotFixID;Description=$_.Description;InstalledOn=if($_.InstalledOn){$_.InstalledOn.ToString('yyyy-MM-dd')}else{''};InstalledBy=$_.InstalledBy}
 }
-");
+"));
             _updateStatus.Text = await _remote.ExecuteTextAsync(@"
 '=== Windows Update services ==='
 Get-Service wuauserv,bits,cryptsvc,usosvc -ErrorAction SilentlyContinue | Format-Table Name,Status,StartType -AutoSize
@@ -728,14 +742,14 @@ $pending = (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component
         if (!EnsureConnected()) return;
         try
         {
-            _pendingUpdateGrid.DataSource = await _remote.ExecuteJsonListAsync<PendingUpdateInfo>(@"
+            BindGrid(_pendingUpdateGrid, await _remote.ExecuteJsonListAsync<PendingUpdateInfo>(@"
 $session=New-Object -ComObject Microsoft.Update.Session
 $searcher=$session.CreateUpdateSearcher()
 $result=$searcher.Search(""IsInstalled=0 and IsHidden=0"")
 foreach($u in $result.Updates){
  [pscustomobject]@{Title=$u.Title;Kb=($u.KBArticleIDs -join ',');IsDownloaded=$u.IsDownloaded;RebootRequired=$u.RebootRequired}
 }
-");
+"));
             WriteAudit("windows-update.search", $"Найдено: {_pendingUpdateGrid.Rows.Count}", true);
         }
         catch (Exception ex) { WriteAudit("windows-update.search", ex.Message, false); ShowError(ex); }
@@ -768,7 +782,7 @@ foreach($u in $result.Updates){
 
     private void RefreshAuditGrid()
     {
-        _auditGrid.DataSource = _appData.ReadAudit();
+        BindGrid(_auditGrid, _appData.ReadAudit());
     }
 
     private void ClearAudit()

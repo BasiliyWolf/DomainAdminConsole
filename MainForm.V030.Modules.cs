@@ -23,7 +23,7 @@ public sealed partial class MainForm
     private readonly DataGridView _devicesGrid = Grid();
     private readonly TextBox _deviceFilter = new() { Width = 300, PlaceholderText = "Имя / класс / производитель / Instance ID" };
 
-    private readonly BindingList<SavedPowerShellScript> _scripts = [];
+    private readonly SortableBindingList<SavedPowerShellScript> _scripts = [];
     private readonly DataGridView _scriptsGrid = Grid();
     private readonly TextBox _scriptName = new() { Width = 210, PlaceholderText = "Название" };
     private readonly TextBox _scriptCategory = new() { Width = 150, PlaceholderText = "Категория" };
@@ -170,16 +170,16 @@ public sealed partial class MainForm
             var selected = _certStore.SelectedItem?.ToString() ?? "Все";
             var stores = selected == "Все" ? "@('My','Root','CA','WebHosting','TrustedPeople')" : $"@('{PsQuote(selected)}')";
             var filter = PsQuote(_certFilter.Text.Trim());
-            _certGrid.DataSource = await _remote.ExecuteJsonListAsync<CertificateInfoRow>($@"
+            BindGrid(_certGrid, await _remote.ExecuteJsonListAsync<CertificateInfoRow>($@"
 $stores={stores}
 foreach($store in $stores){{
  $path='Cert:\LocalMachine\'+$store
  if(Test-Path $path){{ Get-ChildItem $path -ErrorAction SilentlyContinue | Where-Object {{ '{filter}' -eq '' -or $_.Subject -like '*{filter}*' -or $_.Issuer -like '*{filter}*' -or $_.Thumbprint -like '*{filter}*' }} | ForEach-Object {{
   $dns=''; try {{$dns=($_.DnsNameList | ForEach-Object Unicode) -join ', '}} catch {{}}
-  [pscustomobject]@{{Store=$store;Thumbprint=$_.Thumbprint;Subject=$_.Subject;Issuer=$_.Issuer;NotBefore=$_.NotBefore;NotAfter=$_.NotAfter;HasPrivateKey=$_.HasPrivateKey;FriendlyName=$_.FriendlyName;DnsNames=$dns}}
+  [pscustomobject]@{{Store=$store;Thumbprint=$_.Thumbprint;Subject=$_.Subject;Issuer=$_.Issuer;NotBefore=if($_.NotBefore){{$_.NotBefore.ToString('o')}}else{{$null}};NotAfter=if($_.NotAfter){{$_.NotAfter.ToString('o')}}else{{$null}};HasPrivateKey=$_.HasPrivateKey;FriendlyName=$_.FriendlyName;DnsNames=$dns}}
  }} }}
 }}
-");
+"));
             WriteAudit("certificates.list", selected, true);
         }
         catch (Exception ex) { WriteAudit("certificates.list", ex.Message, false); ShowError(ex); }
@@ -206,16 +206,16 @@ foreach($store in $stores){{
         if (!EnsureConnected()) return;
         try
         {
-            _firewallProfilesGrid.DataSource = await _remote.ExecuteJsonListAsync<FirewallProfileInfoRow>(@"
+            BindGrid(_firewallProfilesGrid, await _remote.ExecuteJsonListAsync<FirewallProfileInfoRow>(@"
 Get-NetFirewallProfile -ErrorAction Stop | ForEach-Object { [pscustomobject]@{Name=[string]$_.Name;Enabled=[bool]$_.Enabled;DefaultInboundAction=[string]$_.DefaultInboundAction;DefaultOutboundAction=[string]$_.DefaultOutboundAction;NotifyOnListen=[bool]$_.NotifyOnListen;LogAllowed=[bool]$_.LogAllowed;LogBlocked=[bool]$_.LogBlocked} }
-");
+"));
             var filter = PsQuote(_firewallFilter.Text.Trim());
-            _firewallRulesGrid.DataSource = await _remote.ExecuteJsonListAsync<FirewallRuleInfoRow>($@"
+            BindGrid(_firewallRulesGrid, await _remote.ExecuteJsonListAsync<FirewallRuleInfoRow>($@"
 Get-NetFirewallRule -ErrorAction Stop | Where-Object {{ '{filter}' -eq '' -or $_.DisplayName -like '*{filter}*' -or $_.Name -like '*{filter}*' }} | Select-Object -First 1500 | ForEach-Object {{
  $r=$_; $pf=$r | Get-NetFirewallPortFilter -ErrorAction SilentlyContinue; $af=$r | Get-NetFirewallApplicationFilter -ErrorAction SilentlyContinue; $sf=$r | Get-NetFirewallServiceFilter -ErrorAction SilentlyContinue
  [pscustomobject]@{{Name=$r.Name;DisplayName=$r.DisplayName;Enabled=[string]$r.Enabled;Direction=[string]$r.Direction;Action=[string]$r.Action;Profile=[string]$r.Profile;Protocol=(($pf.Protocol | Select-Object -Unique) -join ',');LocalPort=(($pf.LocalPort | Select-Object -Unique) -join ',');RemotePort=(($pf.RemotePort | Select-Object -Unique) -join ',');Program=(($af.Program | Select-Object -Unique) -join ',');Service=(($sf.Service | Select-Object -Unique) -join ',')}}
 }}
-");
+"));
             WriteAudit("firewall.list", _firewallFilter.Text.Trim(), true);
         }
         catch (Exception ex) { WriteAudit("firewall.list", ex.Message, false); ShowError(ex); }
@@ -270,9 +270,9 @@ Get-NetFirewallRule -ErrorAction Stop | Where-Object {{ '{filter}' -eq '' -or $_
         if (!EnsureConnected()) return;
         try
         {
-            _smbSessionsGrid.DataSource = await _remote.ExecuteJsonListAsync<SmbSessionInfoRow>(@"
+            BindGrid(_smbSessionsGrid, await _remote.ExecuteJsonListAsync<SmbSessionInfoRow>(@"
 if(Get-Command Get-SmbSession -ErrorAction SilentlyContinue){ Get-SmbSession | ForEach-Object { [pscustomobject]@{SessionId=[long]$_.SessionId;ClientComputerName=$_.ClientComputerName;ClientUserName=$_.ClientUserName;NumOpens=[int]$_.NumOpens;SecondsExists=[long]$_.SecondsExists;SecondsIdle=[long]$_.SecondsIdle;Dialect=[string]$_.Dialect;Encrypted=[bool]$_.Encrypted} } }
-");
+"));
             WriteAudit("smb.sessions", "Список SMB-сессий", true);
         }
         catch (Exception ex) { WriteAudit("smb.sessions", ex.Message, false); ShowError(ex); }
@@ -283,9 +283,9 @@ if(Get-Command Get-SmbSession -ErrorAction SilentlyContinue){ Get-SmbSession | F
         if (!EnsureConnected()) return;
         try
         {
-            _smbOpenFilesGrid.DataSource = await _remote.ExecuteJsonListAsync<SmbOpenFileInfoRow>(@"
+            BindGrid(_smbOpenFilesGrid, await _remote.ExecuteJsonListAsync<SmbOpenFileInfoRow>(@"
 if(Get-Command Get-SmbOpenFile -ErrorAction SilentlyContinue){ Get-SmbOpenFile | ForEach-Object { [pscustomobject]@{FileId=[long]$_.FileId;SessionId=[long]$_.SessionId;ClientComputerName=$_.ClientComputerName;ClientUserName=$_.ClientUserName;Path=$_.Path;ShareRelativePath=$_.ShareRelativePath;Locks=[int]$_.Locks} } }
-");
+"));
             WriteAudit("smb.open-files", "Список открытых SMB-файлов", true);
         }
         catch (Exception ex) { WriteAudit("smb.open-files", ex.Message, false); ShowError(ex); }
@@ -313,7 +313,7 @@ if(Get-Command Get-SmbOpenFile -ErrorAction SilentlyContinue){ Get-SmbOpenFile |
         try
         {
             var filter = PsQuote(_deviceFilter.Text.Trim());
-            _devicesGrid.DataSource = await _remote.ExecuteJsonListAsync<DeviceInfoRow>($@"
+            BindGrid(_devicesGrid, await _remote.ExecuteJsonListAsync<DeviceInfoRow>($@"
 $drivers=@{{}}
 Get-CimInstance Win32_PnPSignedDriver -ErrorAction SilentlyContinue | ForEach-Object {{ if($_.DeviceID){{$drivers[$_.DeviceID]=$_}} }}
 if(Get-Command Get-PnpDevice -ErrorAction SilentlyContinue){{
@@ -324,7 +324,7 @@ if(Get-Command Get-PnpDevice -ErrorAction SilentlyContinue){{
 }}else{{
  Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue | Where-Object {{ '{filter}' -eq '' -or $_.Name -like '*{filter}*' -or $_.PNPClass -like '*{filter}*' -or $_.PNPDeviceID -like '*{filter}*' }} | ForEach-Object {{ $d=$drivers[$_.PNPDeviceID]; [pscustomobject]@{{Status=$_.Status;Class=$_.PNPClass;FriendlyName=$_.Name;InstanceId=$_.PNPDeviceID;Manufacturer=$_.Manufacturer;DriverProviderName=$d.DriverProviderName;DriverVersion=$d.DriverVersion;DriverDate='';InfName=$d.InfName}} }}
 }}
-");
+"));
             WriteAudit("devices.list", _deviceFilter.Text.Trim(), true);
         }
         catch (Exception ex) { WriteAudit("devices.list", ex.Message, false); ShowError(ex); }
@@ -347,7 +347,7 @@ if(Get-Command Get-PnpDevice -ErrorAction SilentlyContinue){{
     private async Task ScanDevicesAsync()
     {
         if (!EnsureConnected()) return;
-        try { var output = await _remote.ExecuteTextAsync("pnputil.exe /scan-devices"); WriteAudit("devices.scan", ShortResult(output), true); await RefreshDevicesAsync(); }
+        try { var output = await _remote.ExecuteNativeProcessAsync("pnputil.exe", "/scan-devices"); WriteAudit("devices.scan", ShortResult(output), true); await RefreshDevicesAsync(); }
         catch (Exception ex) { WriteAudit("devices.scan", ex.Message, false); ShowError(ex); }
     }
 

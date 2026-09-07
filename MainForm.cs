@@ -2,6 +2,7 @@ using DomainAdminConsole.Models;
 using DomainAdminConsole.Services;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -12,18 +13,20 @@ public sealed partial class MainForm : Form
 {
     private readonly DomainService _domain = new();
     private readonly RemotePowerShellService _remote = new();
-    private readonly BindingList<DomainComputer> _domainComputers = [];
-    private readonly BindingList<DomainComputer> _visibleComputers = [];
+    private readonly SortableBindingList<DomainComputer> _domainComputers = [];
+    private readonly SortableBindingList<DomainComputer> _visibleComputers = [];
 
     private readonly TextBox _target = new() { Width = 260, PlaceholderText = "IP или DNS имя ПК" };
     private readonly Button _connect = new() { Text = "Подключиться", AutoSize = true };
+    private readonly Button _refreshConnected = new() { Text = "Обновить", AutoSize = true, Enabled = false };
     private readonly Label _connectionStatus = new() { Text = "Не подключено", AutoSize = true, Padding = new Padding(8, 7, 0, 0) };
     private readonly Label _domainStatus = new() { Text = "Домен: ...", AutoSize = true, Padding = new Padding(8, 7, 0, 0) };
 
     private readonly TextBox _pcFilter = new() { PlaceholderText = "Фильтр ПК / IP / пользователь", Dock = DockStyle.Fill };
-    private readonly CheckBox _onlyActive = new() { Text = "Только активные", Checked = true, AutoSize = true };
+    private readonly CheckBox _onlyActive = new() { Text = "Только активные", Checked = false, AutoSize = true };
     private readonly DataGridView _domainGrid = Grid();
     private readonly Label _scanStatus = new() { AutoSize = true, Text = "" };
+    private readonly ProgressBar _domainScanProgress = new() { Dock = DockStyle.Fill, Minimum = 0, Maximum = 1, Value = 0 };
     private readonly Button _refreshDomain = new() { Text = "Обновить домен", AutoSize = true };
     private readonly Button _cancelDomainScan = new() { Text = "Стоп", AutoSize = true, Enabled = false };
     private CancellationTokenSource? _domainScanCts;
@@ -47,12 +50,16 @@ public sealed partial class MainForm : Form
     private readonly Button _cancelUserSearch = new() { Text = "Стоп", AutoSize = true, Enabled = false };
     private CancellationTokenSource? _userSearchCts;
 
+    private readonly HashSet<string> _dirtyRemoteTabs = new(StringComparer.OrdinalIgnoreCase);
+    private readonly SemaphoreSlim _tabRefreshGate = new(1, 1);
+    private bool _suppressAutoTabRefresh;
+
     private readonly NotifyIcon _tray = new() { Visible = true, Text = "Domain Admin Console" };
     private bool _reallyExit;
 
     public MainForm()
     {
-        Text = "Domain Admin Console 0.3.1";
+        Text = "Domain Admin Console 0.3.2";
         Width = 1500;
         Height = 900;
         MinimumSize = new Size(1100, 650);
@@ -89,6 +96,7 @@ public sealed partial class MainForm : Form
         top.Controls.Add(new Label { Text = "ПК:", AutoSize = true, Padding = new Padding(0, 7, 0, 0) });
         top.Controls.Add(_target);
         top.Controls.Add(_connect);
+        top.Controls.Add(_refreshConnected);
         top.Controls.Add(_connectionStatus);
         top.Controls.Add(_domainStatus);
 
@@ -138,10 +146,11 @@ public sealed partial class MainForm : Form
     private Control BuildDomainPanel()
     {
         var panel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(6) };
-        var header = new TableLayoutPanel { Dock = DockStyle.Top, Height = 92, ColumnCount = 1, RowCount = 3 };
+        var header = new TableLayoutPanel { Dock = DockStyle.Top, Height = 120, ColumnCount = 1, RowCount = 4 };
         header.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
         header.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
-        header.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+        header.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
+        header.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
 
         header.Controls.Add(_pcFilter, 0, 0);
 
@@ -151,19 +160,23 @@ public sealed partial class MainForm : Form
         options.Controls.Add(_cancelDomainScan);
         header.Controls.Add(options, 0, 1);
 
+        header.Controls.Add(_domainScanProgress, 0, 2);
+
         var status = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
         status.Controls.Add(_scanStatus);
-        header.Controls.Add(status, 0, 2);
+        header.Controls.Add(status, 0, 3);
 
         _domainGrid.AutoGenerateColumns = false;
-        _domainGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(DomainComputer.Name), HeaderText = "ПК", Width = 115 });
-        _domainGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(DomainComputer.IpAddress), HeaderText = "IP", Width = 95 });
-        _domainGrid.Columns.Add(new DataGridViewCheckBoxColumn { DataPropertyName = nameof(DomainComputer.PingOnline), HeaderText = "Ping", Width = 42 });
-        _domainGrid.Columns.Add(new DataGridViewCheckBoxColumn { DataPropertyName = nameof(DomainComputer.WinRmAvailable), HeaderText = "RM", Width = 38 });
-        _domainGrid.Columns.Add(new DataGridViewCheckBoxColumn { DataPropertyName = nameof(DomainComputer.SmbAvailable), HeaderText = "445", Width = 38 });
-        _domainGrid.Columns.Add(new DataGridViewCheckBoxColumn { DataPropertyName = nameof(DomainComputer.RdpAvailable), HeaderText = "RDP", Width = 42 });
-        _domainGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(DomainComputer.Users), HeaderText = "Пользователь", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill });
+        _domainGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(DomainComputer.StatusText), HeaderText = "Статус", FillWeight = 75 });
+        _domainGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(DomainComputer.Name), HeaderText = "ПК", FillWeight = 105 });
+        _domainGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(DomainComputer.IpAddress), HeaderText = "IP", FillWeight = 90 });
+        _domainGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(DomainComputer.PingText), HeaderText = "Ping", FillWeight = 45 });
+        _domainGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(DomainComputer.WinRmText), HeaderText = "WinRM", FillWeight = 55 });
+        _domainGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(DomainComputer.SmbText), HeaderText = "SMB", FillWeight = 45 });
+        _domainGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(DomainComputer.RdpText), HeaderText = "RDP", FillWeight = 45 });
+        _domainGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(DomainComputer.Users), HeaderText = "Пользователь", FillWeight = 150 });
         _domainGrid.DataSource = _visibleComputers;
+        _domainGrid.CellFormatting += DomainGridCellFormatting;
 
         panel.Controls.Add(_domainGrid);
         panel.Controls.Add(header);
@@ -322,14 +335,14 @@ public sealed partial class MainForm : Form
         flow.Controls.Add(Button("Открыть C$", (_, _) => LaunchLocal("explorer.exe", $"\\\\{CurrentHost}\\c$"), 170, 44));
         flow.Controls.Add(Button("Computer Management", (_, _) => LaunchLocal("compmgmt.msc", $"/computer={CurrentHost}"), 170, 44));
         flow.Controls.Add(Button("Event Viewer", (_, _) => LaunchLocal("eventvwr.msc", $"/computer={CurrentHost}"), 170, 44));
-        flow.Controls.Add(Button("GPUpdate /force", async (_, _) => await RunUtilityAsync("gpupdate /force"), 170, 44));
-        flow.Controls.Add(Button("Flush DNS", async (_, _) => await RunUtilityAsync("ipconfig /flushdns"), 170, 44));
-        flow.Controls.Add(Button("IPConfig /all", async (_, _) => await RunUtilityAsync("ipconfig /all"), 170, 44));
+        flow.Controls.Add(Button("GPUpdate /force", async (_, _) => await RunNativeUtilityAsync("gpupdate.exe", "/force", "gpupdate /force"), 170, 44));
+        flow.Controls.Add(Button("Flush DNS", async (_, _) => await RunNativeUtilityAsync("ipconfig.exe", "/flushdns", "ipconfig /flushdns"), 170, 44));
+        flow.Controls.Add(Button("IPConfig /all", async (_, _) => await RunNativeUtilityAsync("ipconfig.exe", "/all", "ipconfig /all"), 170, 44));
         flow.Controls.Add(Button("Перезагрузить ПК", async (_, _) => await RestartRemoteAsync(), 170, 44));
-        flow.Controls.Add(Button("Системная информация", async (_, _) => await RunUtilityAsync("systeminfo"), 170, 44));
-        flow.Controls.Add(Button("Обновить политики + DNS", async (_, _) => await RunUtilityAsync("ipconfig /flushdns; gpupdate /force"), 190, 44));
+        flow.Controls.Add(Button("Системная информация", async (_, _) => await ShowSystemInformationAsync(), 170, 44));
+        flow.Controls.Add(Button("Обновить политики + DNS", async (_, _) => await RefreshPoliciesAndDnsAsync(), 190, 44));
 
-        var messageBox = new TextBox { Width = 500, PlaceholderText = "Сообщение пользователю (msg *)" };
+        var messageBox = new TextBox { Width = 500, PlaceholderText = "Сообщение активному пользователю" };
         flow.Controls.Add(messageBox);
         flow.Controls.Add(Button("Отправить сообщение", async (_, _) => await SendMessageAsync(messageBox.Text), 180, 32));
 
@@ -340,6 +353,8 @@ public sealed partial class MainForm : Form
     private void WireEvents()
     {
         _connect.Click += async (_, _) => await ConnectAsync(_target.Text);
+        _refreshConnected.Click += async (_, _) => await RefreshConnectedViewsAsync();
+        _tabs.SelectedIndexChanged += async (_, _) => await AutoRefreshSelectedTabAsync();
         _target.KeyDown += async (_, e) =>
         {
             if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; await ConnectAsync(_target.Text); }
@@ -405,18 +420,23 @@ public sealed partial class MainForm : Form
         {
             _domainStatus.Text = $"Домен: {_domain.GetCurrentDomainName()}";
             _scanStatus.Text = "Получение списка компьютеров из AD...";
+            _domainScanProgress.Maximum = 1;
+            _domainScanProgress.Value = 0;
             var pcs = await _domain.GetDomainComputersAsync(ct);
 
             _domainComputers.Clear();
             foreach (var pc in pcs) _domainComputers.Add(pc);
             ApplyComputerFilter();
             _scanStatus.Text = $"AD: {pcs.Count} ПК. Проверка online...";
+            _domainScanProgress.Maximum = Math.Max(1, pcs.Count);
+            _domainScanProgress.Value = 0;
 
             int completed = 0;
             var progress = new Progress<DomainComputer>(pc =>
             {
                 completed++;
-                _scanStatus.Text = $"Проверено {completed}/{pcs.Count}; активных: {_domainComputers.Count(x => x.IsActive)}";
+                _domainScanProgress.Value = Math.Min(_domainScanProgress.Maximum, completed);
+                _scanStatus.Text = $"Проверено {completed}/{pcs.Count}; online: {_domainComputers.Count(x => x.ProbeCompleted && x.IsActive)}; offline: {_domainComputers.Count(x => x.ProbeCompleted && !x.IsActive)}";
                 ApplyComputerFilter(false);
             });
             await _domain.ProbeComputersAsync(pcs, 32, progress, ct);
@@ -451,7 +471,9 @@ public sealed partial class MainForm : Form
                       || pc.Name.Contains(filter, StringComparison.OrdinalIgnoreCase)
                       || pc.DnsHostName.Contains(filter, StringComparison.OrdinalIgnoreCase)
                       || pc.IpAddress.Contains(filter, StringComparison.OrdinalIgnoreCase)
-                      || pc.Users.Contains(filter, StringComparison.OrdinalIgnoreCase))))
+                      || pc.Users.Contains(filter, StringComparison.OrdinalIgnoreCase)))
+                 .OrderByDescending(pc => pc.IsActive)
+                 .ThenBy(pc => pc.Name, StringComparer.CurrentCultureIgnoreCase))
             _visibleComputers.Add(pc);
         _visibleComputers.RaiseListChangedEvents = true;
         _visibleComputers.ResetBindings();
@@ -480,12 +502,15 @@ public sealed partial class MainForm : Form
             _target.Text = host;
             _psOutput.AppendText($"[{DateTime.Now:HH:mm:ss}] Подключено к {connectionHost}\r\n");
             WriteAudit("connection.connect", $"Введено: {host}; WinRM: {connectionHost}", true, connectionHost);
-            await RefreshOverviewAsync();
-            await RefreshSessionsAsync();
+            _refreshConnected.Enabled = true;
+            ResetConnectedViews();
+            MarkAllRemoteTabsDirty();
+            await RefreshSelectedTabAsync(force: true);
         }
         catch (Exception ex)
         {
             _connectionStatus.Text = "Ошибка подключения";
+            _refreshConnected.Enabled = false;
             WriteAudit("connection.connect", $"{host}: {ex.Message}", false, host);
             ShowError(ex);
         }
@@ -511,24 +536,8 @@ Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | ForEach-Object {
   }
 }
 ");
-            _diskGrid.DataSource = disks;
-            _systemInfo.Text = await _remote.ExecuteTextAsync(@"
-$os=Get-CimInstance Win32_OperatingSystem
-$cs=Get-CimInstance Win32_ComputerSystem
-$cpu=Get-CimInstance Win32_Processor | Select-Object -First 1
-[pscustomobject]@{
- Computer=$env:COMPUTERNAME
- User=$cs.UserName
- OS=$os.Caption
- Version=$os.Version
- Uptime=((Get-Date)-$os.LastBootUpTime).ToString()
- CPU=$cpu.Name
- RAM_GB=[math]::Round($cs.TotalPhysicalMemory/1GB,2)
- Domain=$cs.Domain
- Manufacturer=$cs.Manufacturer
- Model=$cs.Model
-} | Format-List
-");
+            BindGrid(_diskGrid, disks);
+            _systemInfo.Text = await GetSystemInformationTextAsync();
         }
         catch (Exception ex) { ShowError(ex); }
     }
@@ -542,7 +551,12 @@ $cpu=Get-CimInstance Win32_Processor | Select-Object -First 1
         _psOutput.AppendText($"PS {CurrentHost}> {command}\r\n");
         try
         {
-            var output = await _remote.ExecuteTextAsync(command);
+            string output;
+            if (TryParseSimpleNativeCommand(command, out var nativeFile, out var nativeArguments))
+                output = await _remote.ExecuteNativeProcessAsync(nativeFile, nativeArguments);
+            else
+                output = await _remote.ExecuteTextAsync(command);
+
             _psOutput.AppendText(output + (output.EndsWith("\n") ? "" : "\r\n"));
             WriteAudit("powershell.execute", $"Команда выполнена; длина={command.Length}", true);
         }
@@ -556,11 +570,11 @@ $cpu=Get-CimInstance Win32_Processor | Select-Object -First 1
         if (!EnsureConnected()) return;
         try
         {
-            _processGrid.DataSource = await _remote.ExecuteJsonListAsync<ProcessInfo>(@"
+            BindGrid(_processGrid, await _remote.ExecuteJsonListAsync<ProcessInfo>(@"
 Get-Process -ErrorAction SilentlyContinue | Sort-Object WorkingSet64 -Descending | ForEach-Object {
  [pscustomobject]@{ Id=$_.Id; Name=$_.ProcessName; Cpu=[math]::Round([double]$_.CPU,1); MemoryMb=[math]::Round($_.WorkingSet64/1MB,1); UserName='' }
 }
-");
+"));
         }
         catch (Exception ex) { ShowError(ex); }
     }
@@ -615,11 +629,11 @@ Unregister-ScheduledTask -TaskName $name -Confirm:$false
         if (!EnsureConnected()) return;
         try
         {
-            _serviceGrid.DataSource = await _remote.ExecuteJsonListAsync<ServiceInfo>(@"
+            BindGrid(_serviceGrid, await _remote.ExecuteJsonListAsync<ServiceInfo>(@"
 Get-CimInstance Win32_Service | Sort-Object DisplayName | ForEach-Object {
  [pscustomobject]@{ Name=$_.Name; DisplayName=$_.DisplayName; Status=$_.State; StartType=$_.StartMode }
 }
-");
+"));
         }
         catch (Exception ex) { ShowError(ex); }
     }
@@ -642,11 +656,11 @@ Get-CimInstance Win32_Service | Sort-Object DisplayName | ForEach-Object {
         if (!EnsureConnected()) return;
         try
         {
-            _eventGrid.DataSource = await _remote.ExecuteJsonListAsync<EventRow>($@"
+            BindGrid(_eventGrid, await _remote.ExecuteJsonListAsync<EventRow>($@"
 Get-WinEvent -LogName '{PsQuote(log)}' -MaxEvents {count} -ErrorAction Stop | ForEach-Object {{
  [pscustomobject]@{{ TimeCreated=$_.TimeCreated.ToString('o'); Id=$_.Id; Level=$_.LevelDisplayName; Provider=$_.ProviderName; Message=$_.Message }}
 }}
-");
+"));
             if (_eventGrid.Columns[nameof(EventRow.Message)] is { } col) col.Width = 650;
         }
         catch (Exception ex) { ShowError(ex); }
@@ -657,7 +671,7 @@ Get-WinEvent -LogName '{PsQuote(log)}' -MaxEvents {count} -ErrorAction Stop | Fo
         if (!EnsureConnected()) return;
         try
         {
-            _portGrid.DataSource = await _remote.ExecuteJsonListAsync<PortInfo>(@"
+            var ports = await _remote.ExecuteJsonListAsync<PortInfo>(@"
 $tcp=Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | ForEach-Object {
  $p=Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue
  [pscustomobject]@{Protocol='TCP';LocalAddress=$_.LocalAddress;LocalPort=$_.LocalPort;Process=$p.ProcessName;Pid=$_.OwningProcess}
@@ -668,6 +682,9 @@ $udp=Get-NetUDPEndpoint -ErrorAction SilentlyContinue | ForEach-Object {
 }
 $tcp+$udp | Sort-Object LocalPort
 ");
+            foreach (var port in ports)
+                port.Description = GetPortDescription(port.LocalPort, port.Protocol, port.Process);
+            BindGrid(_portGrid, ports);
         }
         catch (Exception ex) { ShowError(ex); }
     }
@@ -683,7 +700,7 @@ $tcp+$udp | Sort-Object LocalPort
             if (remote)
             {
                 if (!EnsureConnected()) return;
-                output = await _remote.ExecuteTextAsync($"{tool} {PsCmdArg(address)}");
+                output = await _remote.ExecuteNativeProcessAsync(tool == "ping" ? "ping.exe" : "tracert.exe", address);
             }
             else
             {
@@ -699,19 +716,24 @@ $tcp+$udp | Sort-Object LocalPort
         if (!EnsureConnected()) return;
         try
         {
-            _sessionOutput.Text = await _remote.ExecuteTextAsync(@"
-'=== Console user ==='
-(Get-CimInstance Win32_ComputerSystem).UserName
-''
-'=== QUSER ==='
-quser 2>&1
-");
+            var normalizedUsers = await _domain.GetLoggedOnUsersTextAsync(CurrentHost);
+            var sessions = new List<RdpSessionInfo>();
+            try { sessions = await RdpSessionService.GetSessionsAsync(CurrentHost); } catch { }
+
+            var sb = new StringBuilder();
+            sb.AppendLine("=== Пользователи ===");
+            sb.AppendLine(string.IsNullOrWhiteSpace(normalizedUsers) ? "Нет вошедших пользователей" : normalizedUsers);
+            sb.AppendLine();
+            sb.AppendLine("=== Сеансы RDP / Console ===");
+            if (sessions.Count == 0) sb.AppendLine("Сеансы через WTS API не найдены или недоступны.");
+            foreach (var session in sessions)
+                sb.AppendLine($"ID {session.Id,-4} {session.State,-14} {session.StationName,-18} {session.UserDisplay}");
+            _sessionOutput.Text = sb.ToString();
 
             var pc = _domainComputers.FirstOrDefault(x => x.Name.Equals(CurrentHost, StringComparison.OrdinalIgnoreCase) || x.DnsHostName.Equals(CurrentHost, StringComparison.OrdinalIgnoreCase));
             if (pc is not null)
             {
-                var console = await _remote.ExecuteTextAsync("(Get-CimInstance Win32_ComputerSystem).UserName");
-                pc.Users = console.Trim();
+                pc.Users = normalizedUsers;
                 ApplyComputerFilter(false);
             }
         }
@@ -737,7 +759,7 @@ quser 2>&1
         {
             var progress = new Progress<string>(x => _userSearchStatus.Text = x);
             var result = await _domain.FindUserAcrossDomainAsync(_domainComputers, user, 20, progress, _userSearchCts.Token);
-            _userSearchGrid.DataSource = result;
+            BindGrid(_userSearchGrid, result);
             _userSearchStatus.Text = $"Найдено ПК: {result.Count}";
         }
         catch (OperationCanceledException) { _userSearchStatus.Text = "Поиск остановлен."; }
@@ -795,6 +817,204 @@ quser 2>&1
         catch (Exception ex) { WriteAudit("utility.execute", $"{command}: {ex.Message}", false); ShowError(ex); }
     }
 
+    private async Task<string> GetSystemInformationTextAsync()
+    {
+        return await _remote.ExecuteTextAsync(@"
+$os=Get-CimInstance Win32_OperatingSystem
+$cs=Get-CimInstance Win32_ComputerSystem
+$cpu=Get-CimInstance Win32_Processor | Select-Object -First 1
+$bios=Get-CimInstance Win32_BIOS | Select-Object -First 1
+$ipv4=(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object {$_.IPAddress -notlike '169.254.*' -and $_.IPAddress -ne '127.0.0.1'} | Select-Object -ExpandProperty IPAddress) -join ', '
+$boot=$os.LastBootUpTime
+'Имя компьютера : ' + $env:COMPUTERNAME
+'Пользователь    : ' + [string]$cs.UserName
+'Домен           : ' + [string]$cs.Domain
+'ОС              : ' + [string]$os.Caption
+'Версия ОС       : ' + [string]$os.Version + ' / Build ' + [string]$os.BuildNumber
+'Архитектура     : ' + [string]$os.OSArchitecture
+'Производитель   : ' + [string]$cs.Manufacturer
+'Модель          : ' + [string]$cs.Model
+'Серийный номер  : ' + [string]$bios.SerialNumber
+'CPU             : ' + [string]$cpu.Name
+'Ядер / потоков  : ' + [string]$cpu.NumberOfCores + ' / ' + [string]$cpu.NumberOfLogicalProcessors
+'RAM             : ' + [string]([math]::Round($cs.TotalPhysicalMemory/1GB,2)) + ' ГБ'
+'IPv4            : ' + [string]$ipv4
+'Последняя загрузка: ' + [string]$boot
+'Время работы    : ' + [string](((Get-Date)-$boot).ToString())
+");
+    }
+
+    private async Task ShowSystemInformationAsync()
+    {
+        if (!EnsureConnected()) return;
+        try
+        {
+            _systemInfo.Text = await GetSystemInformationTextAsync();
+            _suppressAutoTabRefresh = true;
+            try { _tabs.SelectedTab = _tabs.TabPages.Cast<TabPage>().First(x => x.Text == "Обзор"); }
+            finally { _suppressAutoTabRefresh = false; }
+            WriteAudit("system.info", "Получена системная информация", true);
+        }
+        catch (Exception ex) { WriteAudit("system.info", ex.Message, false); ShowError(ex); }
+    }
+
+    private async Task RunNativeUtilityAsync(string fileName, string arguments, string displayCommand)
+    {
+        if (!EnsureConnected()) return;
+        try
+        {
+            var output = await _remote.ExecuteNativeProcessAsync(fileName, arguments);
+            _psOutput.AppendText($"\r\nPS {CurrentHost}> {displayCommand}\r\n{output}\r\n");
+            _suppressAutoTabRefresh = true;
+            try { _tabs.SelectedTab = _tabs.TabPages.Cast<TabPage>().First(x => x.Text == "PowerShell"); }
+            finally { _suppressAutoTabRefresh = false; }
+            WriteAudit("utility.execute", displayCommand, true);
+        }
+        catch (Exception ex) { WriteAudit("utility.execute", $"{displayCommand}: {ex.Message}", false); ShowError(ex); }
+    }
+
+    private async Task RefreshPoliciesAndDnsAsync()
+    {
+        if (!EnsureConnected()) return;
+        await RunNativeUtilityAsync("ipconfig.exe", "/flushdns", "ipconfig /flushdns");
+        await RunNativeUtilityAsync("gpupdate.exe", "/force", "gpupdate /force");
+    }
+
+    private async Task RefreshConnectedViewsAsync()
+    {
+        if (!EnsureConnected()) return;
+        ResetConnectedViews();
+        MarkAllRemoteTabsDirty();
+        await RefreshSelectedTabAsync(force: true);
+    }
+
+    private void MarkAllRemoteTabsDirty()
+    {
+        _dirtyRemoteTabs.Clear();
+        foreach (TabPage tab in _tabs.TabPages)
+            _dirtyRemoteTabs.Add(tab.Text);
+    }
+
+    private async Task AutoRefreshSelectedTabAsync()
+    {
+        if (_suppressAutoTabRefresh || !_remote.IsConnected) return;
+        await RefreshSelectedTabAsync(force: true);
+    }
+
+    private async Task RefreshSelectedTabAsync(bool force)
+    {
+        if (!_remote.IsConnected || _tabs.SelectedTab is null) return;
+        var name = _tabs.SelectedTab.Text;
+        if (!force && !_dirtyRemoteTabs.Contains(name)) return;
+        if (!await _tabRefreshGate.WaitAsync(0)) return;
+
+        try
+        {
+            _dirtyRemoteTabs.Remove(name);
+            switch (name)
+            {
+                case "Обзор": await RefreshOverviewAsync(); break;
+                case "Файловый менеджер": RefreshLocalFiles(); await RefreshRemoteFilesAsync(); break;
+                case "Процессы": await RefreshProcessesAsync(); break;
+                case "Службы": await RefreshServicesAsync(); break;
+                case "Журналы Windows": await RefreshEventsAsync("System", 100); break;
+                case "Порты": await RefreshPortsAsync(); break;
+                case "Сеансы": await RefreshSessionsAsync(); break;
+                case "RDP Shadow": await RefreshShadowSessionsAsync(); break;
+                case "Реестр": await ReadRegistryAsync(); break;
+                case "Планировщик": await RefreshScheduledTasksAsync(); break;
+                case "Программы": await RefreshInstalledAppsAsync(); break;
+                case "Локальные учётки": await RefreshLocalAccountsAsync(); break;
+                case "Сеть ПК": await RefreshNetworkConfigurationAsync(); break;
+                case "Windows Update": await RefreshWindowsUpdateAsync(); break;
+                case "BitLocker / TPM": await RefreshBitLockerTpmAsync(); break;
+                case "Принтеры": await RefreshPrintersAsync(); await RefreshPrintJobsAsync(); break;
+                case "Сертификаты": await RefreshCertificatesAsync(); break;
+                case "Firewall": await RefreshFirewallAsync(); break;
+                case "SMB Sessions / Files": await RefreshSmbAsync(); break;
+                case "Устройства / драйверы": await RefreshDevicesAsync(); break;
+                case "Журнал действий": RefreshAuditGrid(); break;
+                case "Массовые действия": LoadBulkTargets(true); break;
+            }
+        }
+        finally { _tabRefreshGate.Release(); }
+    }
+
+    private void ResetConnectedViews()
+    {
+        foreach (var grid in new[]
+        {
+            _diskGrid, _processGrid, _serviceGrid, _eventGrid, _portGrid, _shadowGrid, _registryGrid,
+            _taskGrid, _appsGrid, _accountsGrid, _adminMembersGrid, _adapterGrid, _routeGrid,
+            _hotfixGrid, _pendingUpdateGrid, _bitLockerGrid, _printersGrid, _printJobsGrid,
+            _certGrid, _firewallProfilesGrid, _firewallRulesGrid, _smbSessionsGrid, _smbOpenFilesGrid,
+            _devicesGrid, _remoteFilesGrid
+        })
+            grid.DataSource = null;
+
+        _systemInfo.Clear();
+        _sessionOutput.Clear();
+        _networkOutput.Clear();
+        _computerUserOutput.Clear();
+        _updateStatus.Clear();
+        _tpmInfo.Clear();
+        _remoteFiles.Clear();
+        _installedApps.Clear();
+        _bulkResults.Clear();
+    }
+
+    private void DomainGridCellFormatting(object? sender, DataGridViewCellFormattingEventArgs e)
+    {
+        if (e.RowIndex < 0 || _domainGrid.Rows[e.RowIndex].DataBoundItem is not DomainComputer pc) return;
+        var property = _domainGrid.Columns[e.ColumnIndex].DataPropertyName;
+
+        if (property == nameof(DomainComputer.StatusText))
+        {
+            var color = !pc.ProbeCompleted ? Color.DimGray : pc.IsActive ? Color.ForestGreen : Color.Firebrick;
+            e.CellStyle.ForeColor = color;
+            e.CellStyle.SelectionForeColor = color;
+        }
+        else if (property is nameof(DomainComputer.PingText) or nameof(DomainComputer.WinRmText) or nameof(DomainComputer.SmbText) or nameof(DomainComputer.RdpText))
+        {
+            var ok = property switch
+            {
+                nameof(DomainComputer.PingText) => pc.PingOnline,
+                nameof(DomainComputer.WinRmText) => pc.WinRmAvailable,
+                nameof(DomainComputer.SmbText) => pc.SmbAvailable,
+                nameof(DomainComputer.RdpText) => pc.RdpAvailable,
+                _ => false
+            };
+            var color = !pc.ProbeCompleted ? Color.DimGray : ok ? Color.ForestGreen : Color.Firebrick;
+            e.CellStyle.ForeColor = color;
+            e.CellStyle.SelectionForeColor = color;
+        }
+        else if (pc.ProbeCompleted && !pc.IsActive)
+        {
+            e.CellStyle.ForeColor = Color.Firebrick;
+            e.CellStyle.SelectionForeColor = Color.Firebrick;
+        }
+    }
+
+    private static string GetPortDescription(int port, string protocol, string process)
+    {
+        var description = port switch
+        {
+            20 => "FTP data", 21 => "FTP", 22 => "SSH / SFTP", 23 => "Telnet", 25 => "SMTP",
+            53 => "DNS", 67 => "DHCP Server", 68 => "DHCP Client", 69 => "TFTP", 80 => "HTTP",
+            88 => "Kerberos", 110 => "POP3", 123 => "NTP", 135 => "RPC Endpoint Mapper",
+            137 => "NetBIOS Name", 138 => "NetBIOS Datagram", 139 => "NetBIOS Session", 143 => "IMAP",
+            389 => "LDAP", 443 => "HTTPS", 445 => "SMB / Microsoft-DS", 464 => "Kerberos Password",
+            465 => "SMTPS", 514 => "Syslog", 587 => "SMTP Submission", 636 => "LDAPS", 853 => "DNS over TLS",
+            993 => "IMAPS", 995 => "POP3S", 1433 => "Microsoft SQL Server", 1434 => "MS SQL Browser",
+            1521 => "Oracle Database", 2049 => "NFS", 3306 => "MySQL / MariaDB", 3389 => "RDP",
+            5432 => "PostgreSQL", 5900 => "VNC", 5985 => "WinRM HTTP", 5986 => "WinRM HTTPS",
+            6379 => "Redis", 8080 => "HTTP alternative", 8443 => "HTTPS alternative", 9200 => "Elasticsearch HTTP",
+            9300 => "Elasticsearch transport", 27017 => "MongoDB", _ => ""
+        };
+        if (!string.IsNullOrWhiteSpace(description)) return description;
+        return string.IsNullOrWhiteSpace(process) ? $"{protocol} порт {port}" : $"{process} ({protocol})";
+    }
+
     private async Task RestartRemoteAsync()
     {
         if (!EnsureConnected()) return;
@@ -806,8 +1026,87 @@ quser 2>&1
     private async Task SendMessageAsync(string message)
     {
         if (!EnsureConnected() || string.IsNullOrWhiteSpace(message)) return;
-        try { await _remote.ExecuteTextAsync($"msg * '{PsQuote(message)}'"); WriteAudit("message.send", $"Длина сообщения: {message.Length}", true); }
-        catch (Exception ex) { WriteAudit("message.send", ex.Message, false); ShowError(ex); }
+        var text = message.Trim();
+
+        try
+        {
+            try
+            {
+                var sent = await RdpSessionService.SendMessageAsync(CurrentHost, "Сообщение администратора", text);
+                WriteAudit("message.send", $"WTS; длина сообщения: {text.Length}; сеансов: {sent}", true);
+                MessageBox.Show($"Сообщение отправлено в активные сеансы: {sent}.", "Сообщение", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            catch (Exception wtsError)
+            {
+                // В некоторых доменах удалённый WTS/RPC закрыт firewall-ом, хотя WinRM работает.
+                // Тогда запускаем msg.exe уже внутри подключённого компьютера через WinRM.
+                var safe = text.Replace('\r', ' ').Replace('\n', ' ').Replace('"', '\'');
+                var output = await _remote.ExecuteNativeProcessAsync("msg.exe", $"* /TIME:60 \"{safe}\"");
+                WriteAudit("message.send", $"msg.exe fallback после WTS: {wtsError.Message}; длина={text.Length}", true);
+                MessageBox.Show(
+                    string.IsNullOrWhiteSpace(output) ? "Команда отправки сообщения выполнена." : output.Trim(),
+                    "Сообщение", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+        }
+        catch (Exception ex)
+        {
+            WriteAudit("message.send", ex.Message, false);
+            ShowError(ex);
+        }
+    }
+
+    private static bool TryParseSimpleNativeCommand(string command, out string fileName, out string arguments)
+    {
+        fileName = string.Empty;
+        arguments = string.Empty;
+        var trimmed = command.Trim();
+        if (trimmed.Length == 0) return false;
+
+        // Если присутствует PowerShell-синтаксис, оставляем обработку самому PowerShell.
+        if (trimmed.IndexOfAny(['|', ';', '{', '}', '$', '`', '>', '<']) >= 0) return false;
+
+        var split = trimmed.IndexOfAny([' ', '\t']);
+        var token = split < 0 ? trimmed : trimmed[..split];
+        arguments = split < 0 ? string.Empty : trimmed[(split + 1)..].Trim();
+        var name = Path.GetFileNameWithoutExtension(token).ToLowerInvariant();
+
+        string? exe = name switch
+        {
+            "systeminfo" => "systeminfo.exe",
+            "ipconfig" => "ipconfig.exe",
+            "ping" => "ping.exe",
+            "tracert" => "tracert.exe",
+            "pathping" => "pathping.exe",
+            "route" => "route.exe",
+            "netstat" => "netstat.exe",
+            "arp" => "arp.exe",
+            "nslookup" => "nslookup.exe",
+            "whoami" => "whoami.exe",
+            "hostname" => "hostname.exe",
+            "gpresult" => "gpresult.exe",
+            "gpupdate" => "gpupdate.exe",
+            "driverquery" => "driverquery.exe",
+            "tasklist" => "tasklist.exe",
+            "taskkill" => "taskkill.exe",
+            "quser" => "quser.exe",
+            "query" => "query.exe",
+            "net" => "net.exe",
+            "netsh" => "netsh.exe",
+            "sc" => "sc.exe",
+            "schtasks" => "schtasks.exe",
+            "reg" => "reg.exe",
+            "wevtutil" => "wevtutil.exe",
+            "wmic" => "wmic.exe",
+            "dism" => "dism.exe",
+            "sfc" => "sfc.exe",
+            "bcdedit" => "bcdedit.exe",
+            _ => null
+        };
+
+        if (exe is null) return false;
+        fileName = exe;
+        return true;
     }
 
     private string CurrentHost => _remote.ConnectedHost ?? _target.Text.Trim();
@@ -878,18 +1177,92 @@ quser 2>&1
         return split;
     }
 
-    private static DataGridView Grid() => new()
+    private static DataGridView Grid(bool readOnly = true, bool multiSelect = false, bool autoGenerateColumns = true)
     {
-        Dock = DockStyle.Fill,
-        ReadOnly = true,
-        AllowUserToAddRows = false,
-        AllowUserToDeleteRows = false,
-        SelectionMode = DataGridViewSelectionMode.FullRowSelect,
-        MultiSelect = false,
-        AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.DisplayedCells,
-        RowHeadersVisible = false,
-        BackgroundColor = SystemColors.Window
-    };
+        var grid = new DataGridView
+        {
+            Dock = DockStyle.Fill,
+            ReadOnly = readOnly,
+            AllowUserToAddRows = false,
+            AllowUserToDeleteRows = false,
+            SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+            MultiSelect = multiSelect,
+            AutoGenerateColumns = autoGenerateColumns,
+            AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
+            RowHeadersVisible = false,
+            BackgroundColor = SystemColors.Window,
+            ClipboardCopyMode = DataGridViewClipboardCopyMode.EnableAlwaysIncludeHeaderText
+        };
+
+        grid.DataBindingComplete += (_, _) =>
+        {
+            foreach (DataGridViewColumn column in grid.Columns)
+            {
+                column.SortMode = DataGridViewColumnSortMode.Automatic;
+                column.MinimumWidth = Math.Max(column.MinimumWidth, 45);
+            }
+        };
+
+        grid.MouseDown += (_, e) =>
+        {
+            if (e.Button != MouseButtons.Right) return;
+            var hit = grid.HitTest(e.X, e.Y);
+            if (hit.RowIndex >= 0 && hit.ColumnIndex >= 0)
+            {
+                grid.ClearSelection();
+                grid.CurrentCell = grid.Rows[hit.RowIndex].Cells[hit.ColumnIndex];
+                grid.Rows[hit.RowIndex].Selected = true;
+            }
+        };
+
+        grid.ContextMenuStrip = CreateGridContextMenu(grid);
+        return grid;
+    }
+
+    private static ContextMenuStrip CreateGridContextMenu(DataGridView grid)
+    {
+        var menu = new ContextMenuStrip();
+        menu.Items.Add("Копировать ячейку", null, (_, _) => CopyGridCell(grid));
+        menu.Items.Add("Копировать строку", null, (_, _) => CopyGridRow(grid));
+        menu.Items.Add("Копировать таблицу", null, (_, _) => CopyGridTable(grid));
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("Растянуть столбцы", null, (_, _) => grid.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill);
+        return menu;
+    }
+
+    private static void CopyGridCell(DataGridView grid)
+    {
+        try { if (grid.CurrentCell?.FormattedValue is not null) Clipboard.SetText(Convert.ToString(grid.CurrentCell.FormattedValue) ?? string.Empty); } catch { }
+    }
+
+    private static void CopyGridRow(DataGridView grid)
+    {
+        if (grid.CurrentRow is null) return;
+        try
+        {
+            var values = grid.Columns.Cast<DataGridViewColumn>().Where(c => c.Visible)
+                .Select(c => Convert.ToString(grid.CurrentRow.Cells[c.Index].FormattedValue) ?? string.Empty);
+            Clipboard.SetText(string.Join("\t", values));
+        }
+        catch { }
+    }
+
+    private static void CopyGridTable(DataGridView grid)
+    {
+        try
+        {
+            var columns = grid.Columns.Cast<DataGridViewColumn>().Where(c => c.Visible).OrderBy(c => c.DisplayIndex).ToList();
+            var sb = new StringBuilder();
+            sb.AppendLine(string.Join("\t", columns.Select(c => c.HeaderText)));
+            foreach (DataGridViewRow row in grid.Rows)
+                sb.AppendLine(string.Join("\t", columns.Select(c => Convert.ToString(row.Cells[c.Index].FormattedValue) ?? string.Empty)));
+            Clipboard.SetText(sb.ToString());
+        }
+        catch { }
+    }
+
+    private static void BindGrid<T>(DataGridView grid, IEnumerable<T> items)
+        => grid.DataSource = new SortableBindingList<T>(items.ToList());
 
     private static Button Button(string text, EventHandler handler, int width = 100, int height = 28)
     {
@@ -910,6 +1283,8 @@ quser 2>&1
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
+                StandardOutputEncoding = GetOemEncoding(),
+                StandardErrorEncoding = GetOemEncoding(),
                 CreateNoWindow = true
             }
         };
@@ -918,6 +1293,12 @@ quser 2>&1
         var stderr = p.StandardError.ReadToEndAsync();
         await p.WaitForExitAsync();
         return (await stdout) + (await stderr);
+    }
+
+    private static Encoding GetOemEncoding()
+    {
+        try { return Encoding.GetEncoding(CultureInfo.CurrentCulture.TextInfo.OEMCodePage); }
+        catch { return Encoding.UTF8; }
     }
 
     private static void LaunchLocal(string file, string arguments)
