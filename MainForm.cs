@@ -59,7 +59,7 @@ public sealed partial class MainForm : Form
 
     public MainForm()
     {
-        Text = "Domain Admin Console 0.3.2";
+        Text = "Domain Admin Console 0.3.3";
         Width = 1500;
         Height = 900;
         MinimumSize = new Size(1100, 650);
@@ -167,13 +167,19 @@ public sealed partial class MainForm : Form
         header.Controls.Add(status, 0, 3);
 
         _domainGrid.AutoGenerateColumns = false;
-        _domainGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(DomainComputer.StatusText), HeaderText = "Статус", FillWeight = 75 });
-        _domainGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(DomainComputer.Name), HeaderText = "ПК", FillWeight = 105 });
-        _domainGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(DomainComputer.IpAddress), HeaderText = "IP", FillWeight = 90 });
-        _domainGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(DomainComputer.PingText), HeaderText = "Ping", FillWeight = 45 });
-        _domainGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(DomainComputer.WinRmText), HeaderText = "WinRM", FillWeight = 55 });
-        _domainGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(DomainComputer.SmbText), HeaderText = "SMB", FillWeight = 45 });
-        _domainGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(DomainComputer.RdpText), HeaderText = "RDP", FillWeight = 45 });
+        _domainGrid.Columns.Add(new DataGridViewTextBoxColumn
+        {
+            DataPropertyName = nameof(DomainComputer.StatusDot), HeaderText = "Статус",
+            FillWeight = 28, MinimumWidth = 44, DefaultCellStyle = new DataGridViewCellStyle { Alignment = DataGridViewContentAlignment.MiddleCenter }
+        });
+        _domainGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(DomainComputer.Name), HeaderText = "ПК", FillWeight = 95 });
+        _domainGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(DomainComputer.IpAddress), HeaderText = "IP", FillWeight = 82 });
+        _domainGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(DomainComputer.ConnectivityText), HeaderText = "Ping / WinRM / SMB", FillWeight = 120 });
+        _domainGrid.Columns.Add(new DataGridViewTextBoxColumn
+        {
+            DataPropertyName = nameof(DomainComputer.RdpDot), HeaderText = "RDP",
+            FillWeight = 28, MinimumWidth = 42, DefaultCellStyle = new DataGridViewCellStyle { Alignment = DataGridViewContentAlignment.MiddleCenter }
+        });
         _domainGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(DomainComputer.Users), HeaderText = "Пользователь", FillWeight = 150 });
         _domainGrid.DataSource = _visibleComputers;
         _domainGrid.CellFormatting += DomainGridCellFormatting;
@@ -968,25 +974,32 @@ $boot=$os.LastBootUpTime
         if (e.RowIndex < 0 || _domainGrid.Rows[e.RowIndex].DataBoundItem is not DomainComputer pc) return;
         var property = _domainGrid.Columns[e.ColumnIndex].DataPropertyName;
 
-        if (property == nameof(DomainComputer.StatusText))
+        if (property == nameof(DomainComputer.StatusDot))
         {
+            // One dot only: green = computer is reachable by at least one probe,
+            // red = all probes failed, grey = scan is still running.
             var color = !pc.ProbeCompleted ? Color.DimGray : pc.IsActive ? Color.ForestGreen : Color.Firebrick;
             e.CellStyle.ForeColor = color;
             e.CellStyle.SelectionForeColor = color;
+            e.CellStyle.Font = new Font(_domainGrid.Font, FontStyle.Bold);
         }
-        else if (property is nameof(DomainComputer.PingText) or nameof(DomainComputer.WinRmText) or nameof(DomainComputer.SmbText) or nameof(DomainComputer.RdpText))
+        else if (property == nameof(DomainComputer.ConnectivityText))
         {
-            var ok = property switch
-            {
-                nameof(DomainComputer.PingText) => pc.PingOnline,
-                nameof(DomainComputer.WinRmText) => pc.WinRmAvailable,
-                nameof(DomainComputer.SmbText) => pc.SmbAvailable,
-                nameof(DomainComputer.RdpText) => pc.RdpAvailable,
-                _ => false
-            };
-            var color = !pc.ProbeCompleted ? Color.DimGray : ok ? Color.ForestGreen : Color.Firebrick;
+            // Ping / WinRM / SMB are shown in one compact comma-separated cell.
+            // Reachable services are green; an empty/offline result is grey/red via
+            // the row handling below.
+            var hasConnectivity = pc.PingOnline || pc.WinRmAvailable || pc.SmbAvailable;
+            var color = !pc.ProbeCompleted ? Color.DimGray : hasConnectivity ? Color.ForestGreen : Color.Firebrick;
             e.CellStyle.ForeColor = color;
             e.CellStyle.SelectionForeColor = color;
+        }
+        else if (property == nameof(DomainComputer.RdpDot))
+        {
+            // RDP is deliberately independent of the general online state.
+            var color = !pc.ProbeCompleted ? Color.DimGray : pc.RdpAvailable ? Color.ForestGreen : Color.Firebrick;
+            e.CellStyle.ForeColor = color;
+            e.CellStyle.SelectionForeColor = color;
+            e.CellStyle.Font = new Font(_domainGrid.Font, FontStyle.Bold);
         }
         else if (pc.ProbeCompleted && !pc.IsActive)
         {

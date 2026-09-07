@@ -17,11 +17,25 @@ public sealed class DomainComputer
     public string Users { get; set; } = "";
     public bool ProbeCompleted { get; set; }
     public bool IsActive => PingOnline || WinRmAvailable || SmbAvailable || RdpAvailable;
-    public string StatusText => !ProbeCompleted ? "Проверка…" : IsActive ? "● ONLINE" : "● OFFLINE";
-    public string PingText => !ProbeCompleted ? "…" : PingOnline ? "● OK" : "● Нет";
-    public string WinRmText => !ProbeCompleted ? "…" : WinRmAvailable ? "● OK" : "● Нет";
-    public string SmbText => !ProbeCompleted ? "…" : SmbAvailable ? "● OK" : "● Нет";
-    public string RdpText => !ProbeCompleted ? "…" : RdpAvailable ? "● OK" : "● Нет";
+    // Compact indicators for the domain computer list.
+    // Status and RDP are rendered as coloured dots by MainForm.CellFormatting.
+    public string StatusDot => "●";
+    public string RdpDot => "●";
+
+    // Show only the services that are actually reachable.  This keeps the left
+    // pane compact: e.g. "Ping, WinRM, SMB" or "WinRM, SMB".
+    public string ConnectivityText
+    {
+        get
+        {
+            if (!ProbeCompleted) return "Проверка…";
+            var available = new List<string>(3);
+            if (PingOnline) available.Add("Ping");
+            if (WinRmAvailable) available.Add("WinRM");
+            if (SmbAvailable) available.Add("SMB");
+            return available.Count == 0 ? "—" : string.Join(", ", available);
+        }
+    }
 }
 
 public sealed class DiskInfo
