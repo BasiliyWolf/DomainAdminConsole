@@ -74,6 +74,7 @@ public sealed partial class MainForm
         _favoritesGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(FavoriteComputer.Group), HeaderText = "Группа", Width = 140 });
         _favoritesGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(FavoriteComputer.Notes), HeaderText = "Примечание", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill });
         _favoritesGrid.CellDoubleClick += async (_, e) => { if (e.RowIndex >= 0) await ConnectSelectedFavoriteAsync(); };
+        MirrorToolbarToGridContextMenu(_favoritesGrid, bar);
 
         tab.Controls.Add(_favoritesGrid);
         tab.Controls.Add(bar);
@@ -90,6 +91,7 @@ public sealed partial class MainForm
         bar.Controls.Add(Button("Подключиться Shadow", (_, _) => LaunchShadow(), 155));
         bar.Controls.Add(Button("Обычный RDP", (_, _) => { if (!string.IsNullOrWhiteSpace(CurrentHost)) LaunchLocal("mstsc.exe", $"/v:{CurrentHost}"); }, 120));
 
+        MirrorToolbarToGridContextMenu(_shadowGrid, bar);
         tab.Controls.Add(_shadowGrid);
         tab.Controls.Add(bar);
         return tab;
@@ -134,6 +136,8 @@ public sealed partial class MainForm
         editBar.Controls.Add(Button("Записать", async (_, _) => await SetRegistryValueAsync()));
         editBar.Controls.Add(Button("Удалить значение", async (_, _) => await RemoveRegistryValueAsync(), 135));
 
+        MirrorToolbarToGridContextMenu(_registryGrid, pathBar);
+        MirrorAdditionalToolbarButtonsToGridContextMenu(_registryGrid, editBar);
         root.Controls.Add(pathBar, 0, 0);
         root.Controls.Add(_registryGrid, 0, 1);
         root.Controls.Add(editBar, 0, 2);
@@ -150,6 +154,7 @@ public sealed partial class MainForm
         bar.Controls.Add(Button("Остановить", async (_, _) => await TaskActionAsync("stop")));
         bar.Controls.Add(Button("Включить", async (_, _) => await TaskActionAsync("enable")));
         bar.Controls.Add(Button("Отключить", async (_, _) => await TaskActionAsync("disable")));
+        MirrorToolbarToGridContextMenu(_taskGrid, bar);
         tab.Controls.Add(_taskGrid);
         tab.Controls.Add(bar);
         return tab;
@@ -163,6 +168,7 @@ public sealed partial class MainForm
         bar.Controls.Add(_appFilter);
         bar.Controls.Add(Button("Удалить MSI", async (_, _) => await UninstallSelectedMsiAsync(), 110));
         _appFilter.TextChanged += (_, _) => ApplyAppFilter();
+        MirrorToolbarToGridContextMenu(_appsGrid, bar);
         tab.Controls.Add(_appsGrid);
         tab.Controls.Add(bar);
         return tab;
@@ -178,6 +184,7 @@ public sealed partial class MainForm
         bar.Controls.Add(Button("Убрать из админов", async (_, _) => await ChangeLocalAdminMembershipAsync(false), 140));
         bar.Controls.Add(Button("Включить учётку", async (_, _) => await ToggleSelectedLocalUserAsync(true), 125));
         bar.Controls.Add(Button("Отключить учётку", async (_, _) => await ToggleSelectedLocalUserAsync(false), 135));
+        MirrorToolbarToGridContextMenu(_accountsGrid, bar);
         var split = CreateSafeSplitContainer(Orientation.Horizontal, desiredDistance: 360);
         var usersPanel = new Panel { Dock = DockStyle.Fill };
         usersPanel.Controls.Add(_accountsGrid);
@@ -198,6 +205,7 @@ public sealed partial class MainForm
         adapterBar.Controls.Add(Button("Обновить", async (_, _) => await RefreshNetworkConfigurationAsync()));
         adapterBar.Controls.Add(Button("Flush DNS", async (_, _) => await RunNativeUtilityAsync("ipconfig.exe", "/flushdns", "ipconfig /flushdns"), 105));
         adapterBar.Controls.Add(Button("Register DNS", async (_, _) => await RunNativeUtilityAsync("ipconfig.exe", "/registerdns", "ipconfig /registerdns"), 115));
+        MirrorToolbarToGridContextMenu(_adapterGrid, adapterBar);
         adapterPanel.Controls.Add(_adapterGrid);
         adapterPanel.Controls.Add(adapterBar);
 
@@ -220,6 +228,7 @@ public sealed partial class MainForm
         bar.Controls.Add(Button("Искать обновления", async (_, _) => await SearchPendingUpdatesAsync(), 135));
         bar.Controls.Add(Button("Запустить сканирование", async (_, _) => await TriggerWindowsUpdateAsync("StartScan"), 150));
         bar.Controls.Add(Button("Запустить установку", async (_, _) => await TriggerWindowsUpdateAsync("StartInstall"), 140));
+        MirrorToolbarToGridContextMenu(_hotfixGrid, bar);
         top.Controls.Add(_hotfixGrid);
         top.Controls.Add(bar);
 
@@ -240,6 +249,7 @@ public sealed partial class MainForm
         bar.Controls.Add(Button("Обновить", (_, _) => RefreshAuditGrid()));
         bar.Controls.Add(Button("Открыть папку", (_, _) => LaunchLocal("explorer.exe", _appData.DataDirectory), 115));
         bar.Controls.Add(Button("Очистить", (_, _) => ClearAudit(), 90));
+        MirrorToolbarToGridContextMenu(_auditGrid, bar);
         tab.Controls.Add(_auditGrid);
         tab.Controls.Add(bar);
         return tab;
@@ -249,7 +259,12 @@ public sealed partial class MainForm
     {
         var menu = _domainGrid.ContextMenuStrip ?? CreateGridContextMenu(_domainGrid);
 
-        var connectItem = new ToolStripMenuItem("Подключиться");
+        var refreshDomainItem = new ToolStripMenuItem("Обновить домен", GetSystemActionImage("Обновить"));
+        refreshDomainItem.Click += (_, _) => _refreshDomain.PerformClick();
+        var stopDomainItem = new ToolStripMenuItem("Стоп", GetSystemActionImage("Стоп"));
+        stopDomainItem.Click += (_, _) => _cancelDomainScan.PerformClick();
+
+        var connectItem = new ToolStripMenuItem("Подключиться", GetSystemActionImage("Подключиться"));
         connectItem.Click += async (_, _) =>
         {
             if (_domainGrid.CurrentRow?.DataBoundItem is not DomainComputer pc) return;
@@ -258,23 +273,26 @@ public sealed partial class MainForm
             await ConnectAsync(host);
         };
 
-        var favoriteItem = new ToolStripMenuItem("Добавить в избранное");
+        var favoriteItem = new ToolStripMenuItem("Добавить в избранное", GetSystemActionImage("Добавить"));
         favoriteItem.Click += (_, _) => AddDomainComputerToFavorites();
 
-        var rdpItem = new ToolStripMenuItem("RDP");
+        var rdpItem = new ToolStripMenuItem("RDP", GetSystemActionImage("RDP"));
         rdpItem.Click += (_, _) =>
         {
             if (_domainGrid.CurrentRow?.DataBoundItem is DomainComputer pc)
                 LaunchLocal("mstsc.exe", $"/v:{(string.IsNullOrWhiteSpace(pc.DnsHostName) ? pc.Name : pc.DnsHostName)}");
         };
 
-        var shareItem = new ToolStripMenuItem("Открыть C$");
+        var shareItem = new ToolStripMenuItem("Открыть C$", GetSystemActionImage("Открыть"));
         shareItem.Click += (_, _) =>
         {
             if (_domainGrid.CurrentRow?.DataBoundItem is DomainComputer pc)
                 LaunchLocal("explorer.exe", $@"\\{(string.IsNullOrWhiteSpace(pc.DnsHostName) ? pc.Name : pc.DnsHostName)}\c$");
         };
 
+        menu.Items.Insert(0, new ToolStripSeparator());
+        menu.Items.Insert(0, stopDomainItem);
+        menu.Items.Insert(0, refreshDomainItem);
         menu.Items.Insert(0, new ToolStripSeparator());
         menu.Items.Insert(0, shareItem);
         menu.Items.Insert(0, rdpItem);
@@ -845,7 +863,9 @@ foreach($u in $result.Updates){
 
             var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft };
             var ok = new Button { Text = "OK", DialogResult = DialogResult.None, Width = 90 };
+            ApplySystemButtonIcon(ok);
             var cancel = new Button { Text = "Отмена", DialogResult = DialogResult.Cancel, Width = 90 };
+            ApplySystemButtonIcon(cancel);
             ok.Click += (_, _) =>
             {
                 if (string.IsNullOrWhiteSpace(_name.Text) || string.IsNullOrWhiteSpace(_host.Text))

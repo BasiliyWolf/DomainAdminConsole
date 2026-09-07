@@ -19,14 +19,20 @@ public sealed partial class MainForm : Form
     private readonly TextBox _target = new() { Width = 260, PlaceholderText = "IP или DNS имя ПК" };
     private readonly Button _connect = new() { Text = "Подключиться", AutoSize = true };
     private readonly Button _refreshConnected = new() { Text = "Обновить", AutoSize = true, Enabled = false };
-    private readonly Label _connectionStatus = new() { Text = "Не подключено", AutoSize = true, Padding = new Padding(8, 7, 0, 0) };
-    private readonly Label _domainStatus = new() { Text = "Домен: ...", AutoSize = true, Padding = new Padding(8, 7, 0, 0) };
+    private readonly StatusStrip _statusStrip = new() { SizingGrip = false };
+    private readonly ToolStripStatusLabel _connectionStatus = new() { Text = "Не подключено" };
+    private readonly ToolStripStatusLabel _domainStatus = new() { Text = "Домен: ..." };
+    private readonly ToolStripStatusLabel _scanStatus = new() { Text = "Готово" };
+    private readonly ToolStripProgressBar _domainScanProgress = new() { Minimum = 0, Maximum = 1, Value = 0, Width = 190, Visible = false };
+    private readonly ToolStripStatusLabel _statusSpring = new() { Spring = true };
+
+    private readonly Panel _busyOverlay = new() { Dock = DockStyle.Fill, BackColor = SystemColors.ControlLightLight, Visible = false };
+    private readonly Label _busyOverlayLabel = new() { Text = "Загрузка данных...", AutoSize = true, Font = new Font(SystemFonts.MessageBoxFont, FontStyle.Bold) };
+    private readonly ProgressBar _busyOverlayProgress = new() { Style = ProgressBarStyle.Marquee, MarqueeAnimationSpeed = 28, Width = 280, Height = 18 };
 
     private readonly TextBox _pcFilter = new() { PlaceholderText = "Фильтр ПК / IP / пользователь", Dock = DockStyle.Fill };
     private readonly CheckBox _onlyActive = new() { Text = "Только активные", Checked = false, AutoSize = true };
     private readonly DataGridView _domainGrid = Grid();
-    private readonly Label _scanStatus = new() { AutoSize = true, Text = "" };
-    private readonly ProgressBar _domainScanProgress = new() { Dock = DockStyle.Fill, Minimum = 0, Maximum = 1, Value = 0 };
     private readonly Button _refreshDomain = new() { Text = "Обновить домен", AutoSize = true };
     private readonly Button _cancelDomainScan = new() { Text = "Стоп", AutoSize = true, Enabled = false };
     private CancellationTokenSource? _domainScanCts;
@@ -59,13 +65,14 @@ public sealed partial class MainForm : Form
 
     public MainForm()
     {
-        Text = "Domain Admin Console 0.3.3";
+        Text = "Domain Admin Console 0.3.4";
         Width = 1500;
         Height = 900;
         MinimumSize = new Size(1100, 650);
         StartPosition = FormStartPosition.CenterScreen;
 
         BuildUi();
+        _remote.BusyChanged += RemoteBusyChanged;
         ConfigureTray();
         WireEvents();
         InitializeAdvancedState();
@@ -97,8 +104,11 @@ public sealed partial class MainForm : Form
         top.Controls.Add(_target);
         top.Controls.Add(_connect);
         top.Controls.Add(_refreshConnected);
-        top.Controls.Add(_connectionStatus);
-        top.Controls.Add(_domainStatus);
+        ApplySystemButtonIcon(_connect);
+        ApplySystemButtonIcon(_refreshConnected);
+        ApplySystemButtonIcon(_refreshDomain);
+        ApplySystemButtonIcon(_cancelDomainScan);
+        ApplySystemButtonIcon(_cancelUserSearch);
 
         var split = CreateSafeSplitContainer(
             Orientation.Vertical,
@@ -107,7 +117,7 @@ public sealed partial class MainForm : Form
             panel2MinSize: 600);
 
         split.Panel1.Controls.Add(BuildDomainPanel());
-        split.Panel2.Controls.Add(_tabs);
+        split.Panel2.Controls.Add(BuildWorkspacePanel());
 
         _tabs.TabPages.Add(BuildOverviewTab());
         _tabs.TabPages.Add(BuildPowerShellTab());
@@ -139,18 +149,73 @@ public sealed partial class MainForm : Form
         _tabs.TabPages.Add(BuildUtilitiesTab());
         _tabs.TabPages.Add(BuildAuditTab());
 
+        ConfigureStatusStrip();
         Controls.Add(split);
         Controls.Add(top);
+        Controls.Add(_statusStrip);
+        _statusStrip.BringToFront();
+        top.BringToFront();
+    }
+
+    private Control BuildWorkspacePanel()
+    {
+        var host = new Panel { Dock = DockStyle.Fill };
+        var center = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 3, BackColor = SystemColors.ControlLightLight };
+        center.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        center.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        center.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        center.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+        center.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        center.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+
+        var card = new TableLayoutPanel { AutoSize = true, ColumnCount = 1, RowCount = 2, Padding = new Padding(22), BackColor = SystemColors.Window };
+        _busyOverlayLabel.Anchor = AnchorStyles.None;
+        _busyOverlayProgress.Anchor = AnchorStyles.None;
+        card.Controls.Add(_busyOverlayLabel, 0, 0);
+        card.Controls.Add(_busyOverlayProgress, 0, 1);
+        center.Controls.Add(card, 1, 1);
+        _busyOverlay.Controls.Add(center);
+
+        host.Controls.Add(_tabs);
+        host.Controls.Add(_busyOverlay);
+        return host;
+    }
+
+    private void ConfigureStatusStrip()
+    {
+        _statusStrip.Items.Clear();
+        _statusStrip.Items.Add(new ToolStripStatusLabel("Подключение:"));
+        _statusStrip.Items.Add(_connectionStatus);
+        _statusStrip.Items.Add(new ToolStripSeparator());
+        _statusStrip.Items.Add(_statusSpring);
+        _statusStrip.Items.Add(_scanStatus);
+        _statusStrip.Items.Add(_domainScanProgress);
+        _statusStrip.Items.Add(new ToolStripSeparator());
+        _statusStrip.Items.Add(_domainStatus);
+    }
+
+    private void RemoteBusyChanged(bool busy)
+    {
+        if (IsDisposed || !IsHandleCreated) return;
+        BeginInvoke(new Action(() =>
+        {
+            _busyOverlay.Visible = busy;
+            if (busy)
+            {
+                _busyOverlayLabel.Text = string.IsNullOrWhiteSpace(CurrentHost)
+                    ? "Подключение..."
+                    : $"Загрузка данных с {CurrentHost}...";
+                _busyOverlay.BringToFront();
+            }
+        }));
     }
 
     private Control BuildDomainPanel()
     {
         var panel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(6) };
-        var header = new TableLayoutPanel { Dock = DockStyle.Top, Height = 120, ColumnCount = 1, RowCount = 4 };
+        var header = new TableLayoutPanel { Dock = DockStyle.Top, Height = 66, ColumnCount = 1, RowCount = 2 };
         header.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
-        header.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
-        header.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
-        header.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+        header.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
 
         header.Controls.Add(_pcFilter, 0, 0);
 
@@ -159,12 +224,6 @@ public sealed partial class MainForm : Form
         options.Controls.Add(_refreshDomain);
         options.Controls.Add(_cancelDomainScan);
         header.Controls.Add(options, 0, 1);
-
-        header.Controls.Add(_domainScanProgress, 0, 2);
-
-        var status = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
-        status.Controls.Add(_scanStatus);
-        header.Controls.Add(status, 0, 3);
 
         _domainGrid.AutoGenerateColumns = false;
         _domainGrid.Columns.Add(new DataGridViewTextBoxColumn
@@ -199,6 +258,7 @@ public sealed partial class MainForm : Form
         _diskGrid.Dock = DockStyle.Fill;
         diskPanel.Controls.Add(_diskGrid);
         diskPanel.Controls.Add(refresh);
+        MirrorToolbarToGridContextMenu(_diskGrid, diskPanel);
         split.Panel1.Controls.Add(diskPanel);
         split.Panel2.Controls.Add(_systemInfo);
         tab.Controls.Add(split);
@@ -230,6 +290,7 @@ public sealed partial class MainForm : Form
         bar.Controls.Add(startPath);
         bar.Controls.Add(Button("Запустить", async (_, _) => await StartRemoteProcessAsync(startPath.Text, false)));
         bar.Controls.Add(Button("Запустить у пользователя", async (_, _) => await StartRemoteProcessAsync(startPath.Text, true)));
+        MirrorToolbarToGridContextMenu(_processGrid, bar);
         tab.Controls.Add(_processGrid);
         tab.Controls.Add(bar);
         return tab;
@@ -243,6 +304,7 @@ public sealed partial class MainForm : Form
         bar.Controls.Add(Button("Запустить", async (_, _) => await ServiceActionAsync("Start-Service")));
         bar.Controls.Add(Button("Остановить", async (_, _) => await ServiceActionAsync("Stop-Service -Force")));
         bar.Controls.Add(Button("Перезапустить", async (_, _) => await ServiceActionAsync("Restart-Service -Force")));
+        MirrorToolbarToGridContextMenu(_serviceGrid, bar);
         tab.Controls.Add(_serviceGrid);
         tab.Controls.Add(bar);
         return tab;
@@ -261,6 +323,7 @@ public sealed partial class MainForm : Form
         bar.Controls.Add(new Label { Text = "Записей:", AutoSize = true, Padding = new Padding(5, 7, 0, 0) });
         bar.Controls.Add(count);
         bar.Controls.Add(Button("Обновить", async (_, _) => await RefreshEventsAsync(log.Text, (int)count.Value)));
+        MirrorToolbarToGridContextMenu(_eventGrid, bar);
         tab.Controls.Add(_eventGrid);
         tab.Controls.Add(bar);
         return tab;
@@ -271,6 +334,7 @@ public sealed partial class MainForm : Form
         var tab = new TabPage("Порты");
         var bar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 40, Padding = new Padding(4) };
         bar.Controls.Add(Button("Обновить", async (_, _) => await RefreshPortsAsync()));
+        MirrorToolbarToGridContextMenu(_portGrid, bar);
         tab.Controls.Add(_portGrid);
         tab.Controls.Add(bar);
         return tab;
@@ -316,6 +380,7 @@ public sealed partial class MainForm : Form
         userBar.Controls.Add(_cancelUserSearch);
         userBar.Controls.Add(_userSearchStatus);
         _userSearchGrid.AutoGenerateColumns = true;
+        MirrorToolbarToGridContextMenu(_userSearchGrid, userBar);
         userToPcPanel.Controls.Add(_userSearchGrid);
         userToPcPanel.Controls.Add(userBar);
 
@@ -425,7 +490,9 @@ public sealed partial class MainForm : Form
         try
         {
             _domainStatus.Text = $"Домен: {_domain.GetCurrentDomainName()}";
+            _domainStatus.ForeColor = Color.DodgerBlue;
             _scanStatus.Text = "Получение списка компьютеров из AD...";
+            _domainScanProgress.Visible = true;
             _domainScanProgress.Maximum = 1;
             _domainScanProgress.Value = 0;
             var pcs = await _domain.GetDomainComputersAsync(ct);
@@ -462,6 +529,7 @@ public sealed partial class MainForm : Form
         {
             _refreshDomain.Enabled = true;
             _cancelDomainScan.Enabled = false;
+            _domainScanProgress.Visible = false;
         }
     }
 
@@ -498,6 +566,7 @@ public sealed partial class MainForm : Form
         UseWaitCursor = true;
         _connect.Enabled = false;
         _connectionStatus.Text = $"Подключение к {host}...";
+        _connectionStatus.ForeColor = Color.DarkOrange;
         try
         {
             var connectionHost = await ResolveConnectionHostAsync(host);
@@ -505,6 +574,7 @@ public sealed partial class MainForm : Form
             _connectionStatus.Text = connectionHost.Equals(host, StringComparison.OrdinalIgnoreCase)
                 ? $"Подключено: {connectionHost}"
                 : $"Подключено: {connectionHost} (введено {host})";
+            _connectionStatus.ForeColor = Color.ForestGreen;
             _target.Text = host;
             _psOutput.AppendText($"[{DateTime.Now:HH:mm:ss}] Подключено к {connectionHost}\r\n");
             WriteAudit("connection.connect", $"Введено: {host}; WinRM: {connectionHost}", true, connectionHost);
@@ -516,6 +586,7 @@ public sealed partial class MainForm : Form
         catch (Exception ex)
         {
             _connectionStatus.Text = "Ошибка подключения";
+            _connectionStatus.ForeColor = Color.Firebrick;
             _refreshConnected.Enabled = false;
             WriteAudit("connection.connect", $"{host}: {ex.Message}", false, host);
             ShowError(ex);
@@ -1281,7 +1352,87 @@ $boot=$os.LastBootUpTime
     {
         var b = new Button { Text = text, Width = width, Height = height, AutoSize = width == 100 };
         b.Click += handler;
+        ApplySystemButtonIcon(b);
         return b;
+    }
+
+    private static void ApplySystemButtonIcon(Button button)
+    {
+        try
+        {
+            var image = GetSystemActionImage(button.Text);
+            if (image is null) return;
+            button.Image = image;
+            button.ImageAlign = ContentAlignment.MiddleLeft;
+            button.TextImageRelation = TextImageRelation.ImageBeforeText;
+        }
+        catch { }
+    }
+
+    private static Image? GetSystemActionImage(string? actionText)
+    {
+        var text = (actionText ?? string.Empty).ToLowerInvariant();
+        Icon icon = text.Contains("удал") || text.Contains("закры") || text.Contains("останов") || text.Contains("отмен") || text.Contains("стоп") || text.Contains("выключ")
+            ? SystemIcons.Error
+            : text.Contains("перез") || text.Contains("restart") || text.Contains("suspend")
+                ? SystemIcons.Warning
+                : text.Contains("обнов") || text.Contains("поиск") || text.Contains("найти") || text.Contains("диагност") || text.Contains("scan") || text.Contains("сеанс")
+                    ? SystemIcons.Information
+                    : text.Contains("rdp") || text.Contains("подключ") || text.Contains("запуст") || text.Contains("включ") || text.Contains("откры") || text.Contains("выполн")
+                        ? SystemIcons.Application
+                        : text.Contains("папк") || text.Contains("explorer")
+                            ? SystemIcons.WinLogo
+                            : SystemIcons.Shield;
+        using var source = icon.ToBitmap();
+        return new Bitmap(source, new Size(16, 16));
+    }
+
+    private static void MirrorToolbarToGridContextMenu(DataGridView grid, Control toolbar)
+    {
+        var buttons = toolbar.Controls.Cast<Control>().OfType<Button>().Where(b => !string.IsNullOrWhiteSpace(b.Text)).ToList();
+        if (buttons.Count == 0) return;
+
+        var menu = CreateGridContextMenu(grid);
+        var mapped = new List<(ToolStripMenuItem Item, Button Button)>();
+        var insertIndex = 0;
+        foreach (var button in buttons)
+        {
+            var item = new ToolStripMenuItem(button.Text, button.Image is null ? null : new Bitmap(button.Image));
+            item.Click += (_, _) => button.PerformClick();
+            menu.Items.Insert(insertIndex++, item);
+            mapped.Add((item, button));
+        }
+        menu.Items.Insert(insertIndex, new ToolStripSeparator());
+        menu.Opening += (_, _) =>
+        {
+            foreach (var pair in mapped)
+                pair.Item.Enabled = pair.Button.Enabled;
+        };
+        grid.ContextMenuStrip = menu;
+    }
+
+    private static void MirrorAdditionalToolbarButtonsToGridContextMenu(DataGridView grid, Control toolbar)
+    {
+        var buttons = toolbar.Controls.Cast<Control>().OfType<Button>().Where(b => !string.IsNullOrWhiteSpace(b.Text)).ToList();
+        if (buttons.Count == 0) return;
+        var menu = grid.ContextMenuStrip ?? CreateGridContextMenu(grid);
+        var separatorIndex = menu.Items.Cast<ToolStripItem>().Select((item, index) => (item, index))
+            .FirstOrDefault(x => x.item is ToolStripSeparator).index;
+        if (separatorIndex < 0) separatorIndex = 0;
+        var mapped = new List<(ToolStripMenuItem Item, Button Button)>();
+        foreach (var button in buttons)
+        {
+            var item = new ToolStripMenuItem(button.Text, button.Image is null ? null : new Bitmap(button.Image));
+            item.Click += (_, _) => button.PerformClick();
+            menu.Items.Insert(separatorIndex++, item);
+            mapped.Add((item, button));
+        }
+        menu.Opening += (_, _) =>
+        {
+            foreach (var pair in mapped)
+                pair.Item.Enabled = pair.Button.Enabled;
+        };
+        grid.ContextMenuStrip = menu;
     }
 
     private static string PsQuote(string s) => s.Replace("'", "''");

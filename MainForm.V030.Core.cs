@@ -109,6 +109,7 @@ public sealed partial class MainForm
         bar.Controls.Add(Button("Переименовать", (_, _) => RenameLocalEntry(), 120));
         bar.Controls.Add(Button("Удалить", (_, _) => DeleteLocalEntry(), 80));
         bar.Controls.Add(Button("Explorer", (_, _) => OpenLocalPathInExplorer(), 80));
+        MirrorToolbarToGridContextMenu(_localFilesGrid, bar);
         panel.Controls.Add(_localFilesGrid);
         panel.Controls.Add(bar);
         panel.Controls.Add(caption);
@@ -128,6 +129,7 @@ public sealed partial class MainForm
         bar.Controls.Add(Button("Переименовать", async (_, _) => await RenameRemoteEntryAsync(), 120));
         bar.Controls.Add(Button("Удалить", async (_, _) => await DeleteRemoteEntryAsync(), 80));
         bar.Controls.Add(Button("Explorer", (_, _) => OpenCurrentRemotePathInExplorer(), 80));
+        MirrorToolbarToGridContextMenu(_remoteFilesGrid, bar);
         panel.Controls.Add(_remoteFilesGrid);
         panel.Controls.Add(bar);
         panel.Controls.Add(caption);
@@ -154,6 +156,7 @@ public sealed partial class MainForm
         bar.Controls.Add(Button("Выполнить", async (_, _) => await RunBulkActionAsync(), 100));
         bar.Controls.Add(Button("Стоп", (_, _) => _bulkCts?.Cancel(), 70));
         bar.Controls.Add(_bulkStatus);
+        MirrorToolbarToGridContextMenu(_bulkTargetsGrid, bar);
         top.Controls.Add(_bulkTargetsGrid);
         top.Controls.Add(bar);
         split.Panel1.Controls.Add(top);
@@ -175,6 +178,7 @@ public sealed partial class MainForm
         bar.Controls.Add(Button("Отправить Magic Packet", async (_, _) => await SendWakeOnLanAsync(), 165));
         bar.Controls.Add(Button("Обновить список", (_, _) => ReloadKnownMacs(), 125));
         bar.Controls.Add(new Label { Text = "MAC-адреса сохраняются при просмотре сетевых интерфейсов доступных ПК.", AutoSize = true, Padding = new Padding(8, 7, 0, 0) });
+        MirrorToolbarToGridContextMenu(_wolGrid, bar);
         tab.Controls.Add(_wolGrid);
         tab.Controls.Add(bar);
         return tab;
@@ -189,6 +193,7 @@ public sealed partial class MainForm
         bar.Controls.Add(Button("Обновить", async (_, _) => await RefreshBitLockerTpmAsync()));
         bar.Controls.Add(Button("Suspend 1 reboot", async (_, _) => await SetBitLockerProtectionAsync(false), 130));
         bar.Controls.Add(Button("Resume", async (_, _) => await SetBitLockerProtectionAsync(true), 90));
+        MirrorToolbarToGridContextMenu(_bitLockerGrid, bar);
         top.Controls.Add(_bitLockerGrid);
         top.Controls.Add(bar);
         split.Panel1.Controls.Add(top);
@@ -206,12 +211,14 @@ public sealed partial class MainForm
         bar1.Controls.Add(Button("Обновить", async (_, _) => await RefreshPrintersAsync()));
         bar1.Controls.Add(Button("Очередь", async (_, _) => await RefreshPrintJobsAsync(), 85));
         bar1.Controls.Add(Button("Restart Spooler", async (_, _) => await RestartSpoolerAsync(), 125));
+        MirrorToolbarToGridContextMenu(_printersGrid, bar1);
         p1.Controls.Add(_printersGrid);
         p1.Controls.Add(bar1);
         var p2 = new Panel { Dock = DockStyle.Fill };
         var bar2 = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 42, Padding = new Padding(4) };
         bar2.Controls.Add(Button("Обновить задания", async (_, _) => await RefreshPrintJobsAsync(), 130));
         bar2.Controls.Add(Button("Отменить задание", async (_, _) => await CancelPrintJobAsync(), 135));
+        MirrorToolbarToGridContextMenu(_printJobsGrid, bar2);
         p2.Controls.Add(_printJobsGrid);
         p2.Controls.Add(bar2);
         split.Panel1.Controls.Add(p1);
@@ -657,7 +664,9 @@ if(Get-Command Get-PrintJob -ErrorAction SilentlyContinue){{
         var lbl = new Label { Text = label, Left = 12, Top = 15, Width = 430 };
         var box = new TextBox { Left = 12, Top = 38, Width = 440, Text = initial };
         var ok = new Button { Text = "OK", Left = 276, Top = 75, Width = 80, DialogResult = DialogResult.OK };
+        ApplySystemButtonIcon(ok);
         var cancel = new Button { Text = "Отмена", Left = 366, Top = 75, Width = 86, DialogResult = DialogResult.Cancel };
+        ApplySystemButtonIcon(cancel);
         form.Controls.AddRange([lbl, box, ok, cancel]); form.AcceptButton = ok; form.CancelButton = cancel;
         return form.ShowDialog() == DialogResult.OK ? box.Text : null;
     }

@@ -13,6 +13,8 @@ public sealed class RemotePowerShellService : IDisposable
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
     private Runspace? _runspace;
+    private int _busyCount;
+    public event Action<bool>? BusyChanged;
     public string? ConnectedHost { get; private set; }
     public bool IsConnected => _runspace?.RunspaceStateInfo.State == RunspaceState.Opened;
 
@@ -24,10 +26,13 @@ public sealed class RemotePowerShellService : IDisposable
 
     public async Task ConnectAsync(string host, PSCredential? credential = null, CancellationToken cancellationToken = default)
     {
-        await _gate.WaitAsync(cancellationToken);
+        BeginBusy();
         try
         {
-            DisconnectInternal();
+            await _gate.WaitAsync(cancellationToken);
+            try
+            {
+                DisconnectInternal();
 
             var endpoints = await GetReachableEndpointsAsync(host, cancellationToken);
             if (endpoints.Count == 0)
@@ -77,18 +82,26 @@ public sealed class RemotePowerShellService : IDisposable
             throw new InvalidOperationException(
                 $"Не удалось подключиться к WinRM на {host}.\r\n" + string.Join("\r\n", errors));
         }
+            finally
+            {
+                _gate.Release();
+            }
+        }
         finally
         {
-            _gate.Release();
+            EndBusy();
         }
     }
 
     public async Task<string> ExecuteTextAsync(string script, CancellationToken cancellationToken = default)
     {
-        await _gate.WaitAsync(cancellationToken);
+        BeginBusy();
         try
         {
-            EnsureConnected();
+            await _gate.WaitAsync(cancellationToken);
+            try
+            {
+                EnsureConnected();
             using var ps = PowerShell.Create();
             ps.Runspace = _runspace;
             ps.AddScript(script).AddCommand("Out-String").AddParameter("Width", 240);
@@ -103,9 +116,14 @@ public sealed class RemotePowerShellService : IDisposable
 
             return sb.ToString();
         }
+            finally
+            {
+                _gate.Release();
+            }
+        }
         finally
         {
-            _gate.Release();
+            EndBusy();
         }
     }
 
@@ -226,6 +244,22 @@ if($p.ExitCode -ne 0) {{ throw '{safeFile} exit code ' + $p.ExitCode }}
 
         throw new InvalidOperationException(
             $"Не удалось выполнить WinRM-команду на {host}.\r\n" + string.Join("\r\n", errors));
+    }
+
+    private void BeginBusy()
+    {
+        if (Interlocked.Increment(ref _busyCount) == 1)
+            BusyChanged?.Invoke(true);
+    }
+
+    private void EndBusy()
+    {
+        var value = Interlocked.Decrement(ref _busyCount);
+        if (value <= 0)
+        {
+            Interlocked.Exchange(ref _busyCount, 0);
+            BusyChanged?.Invoke(false);
+        }
     }
 
     private static WSManConnectionInfo CreateConnectionInfo(

@@ -54,6 +54,7 @@ public sealed partial class MainForm
         bar.Controls.Add(_certFilter);
         bar.Controls.Add(Button("Обновить", async (_, _) => await RefreshCertificatesAsync()));
         bar.Controls.Add(Button("Экспорт .CER", async (_, _) => await ExportSelectedCertificateAsync(), 110));
+        MirrorToolbarToGridContextMenu(_certGrid, bar);
         tab.Controls.Add(_certGrid);
         tab.Controls.Add(bar);
         return tab;
@@ -67,6 +68,7 @@ public sealed partial class MainForm
         var top = new Panel { Dock = DockStyle.Fill };
         var topBar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 42, Padding = new Padding(4) };
         topBar.Controls.Add(Button("Обновить", async (_, _) => await RefreshFirewallAsync()));
+        MirrorToolbarToGridContextMenu(_firewallProfilesGrid, topBar);
         top.Controls.Add(_firewallProfilesGrid);
         top.Controls.Add(topBar);
 
@@ -81,6 +83,7 @@ public sealed partial class MainForm
         bottomBar.Controls.Add(_fwNewPort);
         bottomBar.Controls.Add(Button("+ Inbound Allow", async (_, _) => await AddFirewallPortRuleAsync(), 120));
         bottomBar.Controls.Add(Button("Удалить правило", async (_, _) => await RemoveFirewallRuleAsync(), 120));
+        MirrorToolbarToGridContextMenu(_firewallRulesGrid, bottomBar);
         bottom.Controls.Add(_firewallRulesGrid);
         bottom.Controls.Add(bottomBar);
 
@@ -98,12 +101,14 @@ public sealed partial class MainForm
         var topBar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 42, Padding = new Padding(4) };
         topBar.Controls.Add(Button("Обновить", async (_, _) => await RefreshSmbAsync()));
         topBar.Controls.Add(Button("Закрыть сессию", async (_, _) => await CloseSmbSessionAsync(), 125));
+        MirrorToolbarToGridContextMenu(_smbSessionsGrid, topBar);
         top.Controls.Add(_smbSessionsGrid);
         top.Controls.Add(topBar);
         var bottom = new Panel { Dock = DockStyle.Fill };
         var bottomBar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 42, Padding = new Padding(4) };
         bottomBar.Controls.Add(Button("Обновить файлы", async (_, _) => await RefreshSmbOpenFilesAsync(), 130));
         bottomBar.Controls.Add(Button("Закрыть файл", async (_, _) => await CloseSmbOpenFileAsync(), 110));
+        MirrorToolbarToGridContextMenu(_smbOpenFilesGrid, bottomBar);
         bottom.Controls.Add(_smbOpenFilesGrid);
         bottom.Controls.Add(bottomBar);
         split.Panel1.Controls.Add(top);
@@ -121,6 +126,7 @@ public sealed partial class MainForm
         bar.Controls.Add(Button("Включить", async (_, _) => await SetSelectedDeviceEnabledAsync(true), 85));
         bar.Controls.Add(Button("Отключить", async (_, _) => await SetSelectedDeviceEnabledAsync(false), 95));
         bar.Controls.Add(Button("Scan devices", async (_, _) => await ScanDevicesAsync(), 105));
+        MirrorToolbarToGridContextMenu(_devicesGrid, bar);
         tab.Controls.Add(_devicesGrid);
         tab.Controls.Add(bar);
         return tab;
@@ -138,6 +144,7 @@ public sealed partial class MainForm
         leftBar.Controls.Add(Button("Удалить", (_, _) => DeleteSelectedScript(), 80));
         leftBar.Controls.Add(Button("Запустить", async (_, _) => await RunScriptOnCurrentComputerAsync(), 90));
         leftBar.Controls.Add(Button("В массовые", (_, _) => SendScriptToBulk(), 100));
+        MirrorToolbarToGridContextMenu(_scriptsGrid, leftBar);
         left.Controls.Add(_scriptsGrid);
         left.Controls.Add(leftBar);
 
