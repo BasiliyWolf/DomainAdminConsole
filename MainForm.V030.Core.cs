@@ -14,6 +14,11 @@ public sealed partial class MainForm
     private readonly DataGridView _remoteFilesGrid = Grid();
     private readonly TextBox _localPath = new() { Width = 430, Text = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory) };
     private readonly TextBox _remotePath = new() { Width = 430, Text = @"C:\" };
+    private readonly TreeView _localDirectoryTree = new() { Dock = DockStyle.Fill, HideSelection = false, ShowLines = true, ShowPlusMinus = true };
+    private readonly TreeView _remoteDirectoryTree = new() { Dock = DockStyle.Fill, HideSelection = false, ShowLines = true, ShowPlusMinus = true };
+    private string _remoteTreeHost = string.Empty;
+    private bool _syncingLocalTreeSelection;
+    private bool _syncingRemoteTreeSelection;
     private List<FileManagerEntry> _localFiles = [];
     private List<FileManagerEntry> _remoteFiles = [];
 
@@ -46,6 +51,7 @@ public sealed partial class MainForm
         ConfigureFileGrid(_remoteFilesGrid);
         _localFilesGrid.CellDoubleClick += (_, e) => LocalFileDoubleClick(e.RowIndex);
         _remoteFilesGrid.CellDoubleClick += async (_, e) => await RemoteFileDoubleClickAsync(e.RowIndex);
+        InitializeFileTrees();
 
         _bulkAction.Items.AddRange([
             "GPUpdate /force", "Перезапустить Print Spooler", "Flush DNS",
@@ -86,8 +92,8 @@ public sealed partial class MainForm
 
     private TabPage BuildFileManagerTab()
     {
-        var tab = new TabPage("Файловый менеджер");
-        var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
+        var tab = new TabPage("Файловый менеджер") { Padding = new Padding(4) };
+        var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = new Padding(0), Padding = new Padding(0) };
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         root.Controls.Add(BuildLocalFilesPanel(), 0, 0);
@@ -98,42 +104,201 @@ public sealed partial class MainForm
 
     private Control BuildLocalFilesPanel()
     {
-        var panel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(4) };
-        var caption = new Label { Text = "Локальный компьютер", Dock = DockStyle.Top, Height = 24, Font = new Font(Font, FontStyle.Bold) };
-        var bar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 72, Padding = new Padding(2), WrapContents = true };
-        bar.Controls.Add(_localPath);
-        bar.Controls.Add(Button("Открыть", (_, _) => RefreshLocalFiles(), 75));
-        bar.Controls.Add(Button("Вверх", (_, _) => LocalPathUp(), 70));
-        bar.Controls.Add(Button("→ На ПК", async (_, _) => await UploadSelectedToRemoteAsync(), 90));
-        bar.Controls.Add(Button("Новая папка", (_, _) => CreateLocalFolder(), 105));
-        bar.Controls.Add(Button("Переименовать", (_, _) => RenameLocalEntry(), 120));
-        bar.Controls.Add(Button("Удалить", (_, _) => DeleteLocalEntry(), 80));
-        bar.Controls.Add(Button("Explorer", (_, _) => OpenLocalPathInExplorer(), 80));
-        MirrorToolbarToGridContextMenu(_localFilesGrid, bar);
-        panel.Controls.Add(_localFilesGrid);
-        panel.Controls.Add(bar);
-        panel.Controls.Add(caption);
-        return panel;
+        var box = new GroupBox { Text = "Локальный компьютер", Dock = DockStyle.Fill, Padding = new Padding(6), Margin = new Padding(3) };
+        var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, Margin = new Padding(0), Padding = new Padding(0) };
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        var pathBar = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1, Margin = new Padding(0), Padding = new Padding(0) };
+        pathBar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        pathBar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 94));
+        pathBar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 82));
+        _localPath.Dock = DockStyle.Fill; _localPath.Margin = new Padding(2, 4, 6, 4);
+        var open = Button("Открыть", (_, _) => RefreshLocalFiles(), 88, 30); open.Dock = DockStyle.Fill;
+        var up = Button("Вверх", (_, _) => LocalPathUp(), 76, 30); up.Dock = DockStyle.Fill;
+        pathBar.Controls.Add(_localPath, 0, 0); pathBar.Controls.Add(open, 1, 0); pathBar.Controls.Add(up, 2, 0);
+
+        var commands = new FlowLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(0, 2, 0, 2), WrapContents = false, Margin = new Padding(0) };
+        commands.Controls.Add(Button("→ На ПК", async (_, _) => await UploadSelectedToRemoteAsync(), 92));
+        commands.Controls.Add(Button("Новая папка", (_, _) => CreateLocalFolder(), 110));
+        commands.Controls.Add(Button("Переименовать", (_, _) => RenameLocalEntry(), 124));
+        commands.Controls.Add(Button("Удалить", (_, _) => DeleteLocalEntry(), 88));
+        commands.Controls.Add(Button("Explorer", (_, _) => OpenLocalPathInExplorer(), 92));
+
+        var content = CreateSafeSplitContainer(Orientation.Vertical, desiredDistance: 170, panel1MinSize: 120, panel2MinSize: 220);
+        content.Panel1.Controls.Add(_localDirectoryTree);
+        content.Panel2.Controls.Add(_localFilesGrid);
+
+        MirrorToolbarToGridContextMenu(_localFilesGrid, commands);
+        MirrorAdditionalToolbarButtonsToGridContextMenu(_localFilesGrid, pathBar);
+        root.Controls.Add(pathBar, 0, 0); root.Controls.Add(commands, 0, 1); root.Controls.Add(content, 0, 2);
+        box.Controls.Add(root);
+        return box;
     }
 
     private Control BuildRemoteFilesPanel()
     {
-        var panel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(4) };
-        var caption = new Label { Text = "Удалённый компьютер", Dock = DockStyle.Top, Height = 24, Font = new Font(Font, FontStyle.Bold) };
-        var bar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 72, Padding = new Padding(2), WrapContents = true };
-        bar.Controls.Add(_remotePath);
-        bar.Controls.Add(Button("Открыть", async (_, _) => await RefreshRemoteFilesAsync(), 75));
-        bar.Controls.Add(Button("Вверх", async (_, _) => await RemotePathUpAsync(), 70));
-        bar.Controls.Add(Button("← На этот ПК", async (_, _) => await DownloadSelectedToLocalAsync(), 100));
-        bar.Controls.Add(Button("Новая папка", async (_, _) => await CreateRemoteFolderAsync(), 105));
-        bar.Controls.Add(Button("Переименовать", async (_, _) => await RenameRemoteEntryAsync(), 120));
-        bar.Controls.Add(Button("Удалить", async (_, _) => await DeleteRemoteEntryAsync(), 80));
-        bar.Controls.Add(Button("Explorer", (_, _) => OpenCurrentRemotePathInExplorer(), 80));
-        MirrorToolbarToGridContextMenu(_remoteFilesGrid, bar);
-        panel.Controls.Add(_remoteFilesGrid);
-        panel.Controls.Add(bar);
-        panel.Controls.Add(caption);
-        return panel;
+        var box = new GroupBox { Text = "Удалённый компьютер", Dock = DockStyle.Fill, Padding = new Padding(6), Margin = new Padding(3) };
+        var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, Margin = new Padding(0), Padding = new Padding(0) };
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        var pathBar = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1, Margin = new Padding(0), Padding = new Padding(0) };
+        pathBar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        pathBar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 94));
+        pathBar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 82));
+        _remotePath.Dock = DockStyle.Fill; _remotePath.Margin = new Padding(2, 4, 6, 4);
+        var open = Button("Открыть", async (_, _) => await RefreshRemoteFilesAsync(), 88, 30); open.Dock = DockStyle.Fill;
+        var up = Button("Вверх", async (_, _) => await RemotePathUpAsync(), 76, 30); up.Dock = DockStyle.Fill;
+        pathBar.Controls.Add(_remotePath, 0, 0); pathBar.Controls.Add(open, 1, 0); pathBar.Controls.Add(up, 2, 0);
+
+        var commands = new FlowLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(0, 2, 0, 2), WrapContents = false, Margin = new Padding(0) };
+        commands.Controls.Add(Button("← На этот ПК", async (_, _) => await DownloadSelectedToLocalAsync(), 112));
+        commands.Controls.Add(Button("Новая папка", async (_, _) => await CreateRemoteFolderAsync(), 110));
+        commands.Controls.Add(Button("Переименовать", async (_, _) => await RenameRemoteEntryAsync(), 124));
+        commands.Controls.Add(Button("Удалить", async (_, _) => await DeleteRemoteEntryAsync(), 88));
+        commands.Controls.Add(Button("Explorer", (_, _) => OpenCurrentRemotePathInExplorer(), 92));
+
+        var content = CreateSafeSplitContainer(Orientation.Vertical, desiredDistance: 170, panel1MinSize: 120, panel2MinSize: 220);
+        content.Panel1.Controls.Add(_remoteDirectoryTree);
+        content.Panel2.Controls.Add(_remoteFilesGrid);
+
+        MirrorToolbarToGridContextMenu(_remoteFilesGrid, commands);
+        MirrorAdditionalToolbarButtonsToGridContextMenu(_remoteFilesGrid, pathBar);
+        root.Controls.Add(pathBar, 0, 0); root.Controls.Add(commands, 0, 1); root.Controls.Add(content, 0, 2);
+        box.Controls.Add(root);
+        return box;
+    }
+
+    private void InitializeFileTrees()
+    {
+        _localDirectoryTree.BeforeExpand += (_, e) => LoadLocalDirectoryChildren(e.Node);
+        _localDirectoryTree.AfterSelect += (_, e) =>
+        {
+            if (_syncingLocalTreeSelection || e.Node.Tag is not string path) return;
+            _localPath.Text = path;
+            RefreshLocalFiles();
+        };
+        _remoteDirectoryTree.BeforeExpand += async (_, e) => await LoadRemoteDirectoryChildrenAsync(e.Node);
+        _remoteDirectoryTree.AfterSelect += async (_, e) =>
+        {
+            if (_syncingRemoteTreeSelection || e.Node.Tag is not string path) return;
+            _remotePath.Text = path;
+            await RefreshRemoteFilesAsync();
+        };
+        PopulateLocalDirectoryRoots();
+        ConfigureDirectoryTreeContextMenu(_localDirectoryTree, false);
+        ConfigureDirectoryTreeContextMenu(_remoteDirectoryTree, true);
+    }
+
+    private void PopulateLocalDirectoryRoots()
+    {
+        _localDirectoryTree.Nodes.Clear();
+        foreach (var drive in DriveInfo.GetDrives().Where(x => x.IsReady))
+        {
+            var node = new TreeNode($"{drive.Name}  {drive.VolumeLabel}".Trim()) { Tag = drive.RootDirectory.FullName };
+            node.Nodes.Add(new TreeNode("Загрузка...") { Tag = null });
+            _localDirectoryTree.Nodes.Add(node);
+        }
+    }
+
+    private void LoadLocalDirectoryChildren(TreeNode node)
+    {
+        if (node.Tag is not string path) return;
+        if (node.Nodes.Count > 0 && node.Nodes.Cast<TreeNode>().All(x => x.Tag is string)) return;
+        try
+        {
+            var dirs = Directory.EnumerateDirectories(path).OrderBy(x => x, StringComparer.CurrentCultureIgnoreCase).ToList();
+            node.Nodes.Clear();
+            foreach (var dir in dirs)
+            {
+                var name = Path.GetFileName(dir.TrimEnd('\\'));
+                var child = new TreeNode(string.IsNullOrWhiteSpace(name) ? dir : name) { Tag = dir };
+                child.Nodes.Add(new TreeNode("Загрузка...") { Tag = null });
+                node.Nodes.Add(child);
+            }
+        }
+        catch
+        {
+            node.Nodes.Clear();
+            node.Nodes.Add(new TreeNode("Доступ запрещён") { ForeColor = Color.Firebrick });
+        }
+    }
+
+    private async Task EnsureRemoteDirectoryRootsAsync()
+    {
+        if (!EnsureConnected()) return;
+        if (_remoteTreeHost.Equals(CurrentHost, StringComparison.OrdinalIgnoreCase) && _remoteDirectoryTree.Nodes.Count > 0) return;
+        try
+        {
+            var drives = await _remote.ExecuteJsonListAsync<RemoteDirectoryNodeRow>(@"
+Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | Sort-Object DeviceID | ForEach-Object {
+ [pscustomobject]@{Name=$_.DeviceID;FullName=($_.DeviceID+'\')}
+}
+");
+            _remoteDirectoryTree.BeginUpdate();
+            _remoteDirectoryTree.Nodes.Clear();
+            foreach (var drive in drives)
+            {
+                var node = new TreeNode(drive.Name) { Tag = drive.FullName };
+                node.Nodes.Add(new TreeNode("Загрузка...") { Tag = null });
+                _remoteDirectoryTree.Nodes.Add(node);
+            }
+            _remoteTreeHost = CurrentHost;
+        }
+        catch { }
+        finally { _remoteDirectoryTree.EndUpdate(); }
+    }
+
+    private async Task LoadRemoteDirectoryChildrenAsync(TreeNode node)
+    {
+        if (!EnsureConnected() || node.Tag is not string path) return;
+        if (node.Nodes.Count > 0 && node.Nodes.Cast<TreeNode>().All(x => x.Tag is string)) return;
+        try
+        {
+            var dirs = await _remote.ExecuteJsonListAsync<RemoteDirectoryNodeRow>($@"
+Get-ChildItem -LiteralPath '{PsQuote(path)}' -Directory -Force -ErrorAction Stop | Sort-Object Name | ForEach-Object {{
+ [pscustomobject]@{{Name=$_.Name;FullName=$_.FullName}}
+}}
+");
+            node.Nodes.Clear();
+            foreach (var dir in dirs)
+            {
+                var child = new TreeNode(dir.Name) { Tag = dir.FullName };
+                child.Nodes.Add(new TreeNode("Загрузка...") { Tag = null });
+                node.Nodes.Add(child);
+            }
+        }
+        catch
+        {
+            node.Nodes.Clear();
+            node.Nodes.Add(new TreeNode("Доступ запрещён") { ForeColor = Color.Firebrick });
+        }
+    }
+
+    private void ConfigureDirectoryTreeContextMenu(TreeView tree, bool remote)
+    {
+        tree.NodeMouseClick += (_, e) => { if (e.Button == MouseButtons.Right) tree.SelectedNode = e.Node; };
+        var menu = new ContextMenuStrip();
+        menu.Items.Add("Открыть", null, async (_, _) =>
+        {
+            if (tree.SelectedNode?.Tag is not string path) return;
+            if (remote) { _remotePath.Text = path; await RefreshRemoteFilesAsync(); }
+            else { _localPath.Text = path; RefreshLocalFiles(); }
+        });
+        menu.Items.Add("Копировать путь", null, (_, _) =>
+        {
+            if (tree.SelectedNode?.Tag is string path) try { Clipboard.SetText(path); } catch { }
+        });
+        tree.ContextMenuStrip = menu;
+    }
+
+    private sealed class RemoteDirectoryNodeRow
+    {
+        public string Name { get; set; } = "";
+        public string FullName { get; set; } = "";
     }
 
     private TabPage BuildBulkTab()
@@ -306,6 +471,7 @@ public sealed partial class MainForm
         var path = _remotePath.Text.Trim();
         try
         {
+            await EnsureRemoteDirectoryRootsAsync();
             _remoteFiles = await _remote.ExecuteJsonListAsync<FileManagerEntry>($@"
 Get-ChildItem -LiteralPath '{PsQuote(path)}' -Force -ErrorAction Stop | Sort-Object @{{Expression={{-not $_.PSIsContainer}}}},Name | ForEach-Object {{
  [pscustomobject]@{{Name=$_.Name;FullName=$_.FullName;IsDirectory=$_.PSIsContainer;SizeBytes=if($_.PSIsContainer){{0}}else{{$_.Length}};LastWriteTime=if($_.LastWriteTime){{$_.LastWriteTime.ToString('o')}}else{{$null}}}}

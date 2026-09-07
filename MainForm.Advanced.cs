@@ -22,6 +22,9 @@ public sealed partial class MainForm
     private readonly TextBox _registryValueData = new() { Width = 250, PlaceholderText = "Данные" };
     private readonly ComboBox _registryValueType = new() { Width = 110, DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly DataGridView _registryGrid = Grid();
+    private readonly TreeView _registryTree = new() { Dock = DockStyle.Fill, HideSelection = false, ShowLines = true, ShowPlusMinus = true };
+    private bool _registryTreeInitialized;
+    private bool _registryTreeSelectionSync;
 
     private readonly DataGridView _taskGrid = Grid();
     private readonly DataGridView _appsGrid = Grid();
@@ -99,50 +102,132 @@ public sealed partial class MainForm
 
     private TabPage BuildRegistryTab()
     {
-        var tab = new TabPage("Реестр");
+        var tab = new TabPage("Реестр") { Padding = new Padding(6) };
         _registryValueType.Items.AddRange(["String", "ExpandString", "MultiString", "DWord", "QWord", "Binary"]);
-        _registryValueType.SelectedIndex = 0;
-        _registryGrid.CellDoubleClick += async (_, e) =>
+        if (_registryValueType.SelectedIndex < 0) _registryValueType.SelectedIndex = 0;
+
+        _registryTree.BeforeExpand += async (_, e) => await LoadRegistryTreeChildrenAsync(e.Node);
+        _registryTree.AfterSelect += async (_, e) =>
+        {
+            if (_registryTreeSelectionSync || e.Node.Tag is not string path) return;
+            _registryPath.Text = path;
+            await ReadRegistryAsync();
+        };
+        _registryTree.NodeMouseClick += (_, e) => { if (e.Button == MouseButtons.Right) _registryTree.SelectedNode = e.Node; };
+        var treeMenu = new ContextMenuStrip();
+        treeMenu.Items.Add("Обновить ветку", null, async (_, _) =>
+        {
+            if (_registryTree.SelectedNode is { } node)
+            {
+                node.Nodes.Clear();
+                node.Nodes.Add(new TreeNode("Загрузка...") { Tag = null });
+                await LoadRegistryTreeChildrenAsync(node);
+            }
+        });
+        treeMenu.Items.Add("Копировать путь", null, (_, _) =>
+        {
+            if (_registryTree.SelectedNode?.Tag is string path) try { Clipboard.SetText(path); } catch { }
+        });
+        _registryTree.ContextMenuStrip = treeMenu;
+
+        _registryGrid.CellDoubleClick += (_, e) =>
         {
             if (e.RowIndex < 0 || _registryGrid.Rows[e.RowIndex].DataBoundItem is not RegistryValueRow row) return;
-            if (row.IsKey)
-            {
-                _registryPath.Text = _registryPath.Text.TrimEnd('\\') + "\\" + row.Name;
-                await ReadRegistryAsync();
-            }
-            else
-            {
-                _registryValueName.Text = row.Name;
-                _registryValueData.Text = row.Value;
-                var type = _registryValueType.Items.Cast<string>().FirstOrDefault(x => x.Equals(row.Type, StringComparison.OrdinalIgnoreCase));
-                if (type is not null) _registryValueType.SelectedItem = type;
-            }
+            _registryValueName.Text = row.Name == "(Default)" ? string.Empty : row.Name;
+            _registryValueData.Text = row.Value;
+            var type = _registryValueType.Items.Cast<string>().FirstOrDefault(x => x.Equals(row.Type, StringComparison.OrdinalIgnoreCase));
+            if (type is not null) _registryValueType.SelectedItem = type;
         };
 
-        var root = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3, ColumnCount = 1 };
+        var root = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3, ColumnCount = 1, Margin = new Padding(0), Padding = new Padding(0) };
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
 
         var pathBar = new FlowLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(4), WrapContents = false };
+        _registryPath.Width = 560;
         pathBar.Controls.Add(_registryPath);
-        pathBar.Controls.Add(Button("Прочитать", async (_, _) => await ReadRegistryAsync()));
-        pathBar.Controls.Add(Button("Создать ключ", async (_, _) => await CreateRegistryKeyAsync(), 110));
+        pathBar.Controls.Add(Button("Обновить", async (_, _) => await ReadRegistryAsync(), 100));
+        pathBar.Controls.Add(Button("Создать ключ", async (_, _) => await CreateRegistryKeyAsync(), 120));
+
+        var content = CreateSafeSplitContainer(Orientation.Vertical, desiredDistance: 285, panel1MinSize: 190, panel2MinSize: 360);
+        var treeBox = new GroupBox { Text = "Разделы реестра", Dock = DockStyle.Fill, Padding = new Padding(6) };
+        treeBox.Controls.Add(_registryTree);
+        var valuesBox = new GroupBox { Text = "Значения выбранного ключа", Dock = DockStyle.Fill, Padding = new Padding(6) };
+        valuesBox.Controls.Add(_registryGrid);
+        content.Panel1.Controls.Add(treeBox);
+        content.Panel2.Controls.Add(valuesBox);
 
         var editBar = new FlowLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(4), WrapContents = false };
         editBar.Controls.Add(_registryValueName);
         editBar.Controls.Add(_registryValueData);
         editBar.Controls.Add(_registryValueType);
         editBar.Controls.Add(Button("Записать", async (_, _) => await SetRegistryValueAsync()));
-        editBar.Controls.Add(Button("Удалить значение", async (_, _) => await RemoveRegistryValueAsync(), 135));
+        editBar.Controls.Add(Button("Удалить значение", async (_, _) => await RemoveRegistryValueAsync(), 145));
 
         MirrorToolbarToGridContextMenu(_registryGrid, pathBar);
         MirrorAdditionalToolbarButtonsToGridContextMenu(_registryGrid, editBar);
         root.Controls.Add(pathBar, 0, 0);
-        root.Controls.Add(_registryGrid, 0, 1);
+        root.Controls.Add(content, 0, 1);
         root.Controls.Add(editBar, 0, 2);
         tab.Controls.Add(root);
+
+        InitializeRegistryTree();
         return tab;
+    }
+
+    private void InitializeRegistryTree()
+    {
+        if (_registryTreeInitialized) return;
+        _registryTreeInitialized = true;
+        _registryTree.Nodes.Clear();
+        AddRegistryRoot("HKEY_LOCAL_MACHINE", @"Registry::HKEY_LOCAL_MACHINE");
+        AddRegistryRoot("HKEY_CURRENT_USER", @"Registry::HKEY_CURRENT_USER");
+        AddRegistryRoot("HKEY_CLASSES_ROOT", @"Registry::HKEY_CLASSES_ROOT");
+        AddRegistryRoot("HKEY_USERS", @"Registry::HKEY_USERS");
+        AddRegistryRoot("HKEY_CURRENT_CONFIG", @"Registry::HKEY_CURRENT_CONFIG");
+    }
+
+    private void AddRegistryRoot(string caption, string path)
+    {
+        var node = new TreeNode(caption) { Tag = path };
+        node.Nodes.Add(new TreeNode("Загрузка...") { Tag = null });
+        _registryTree.Nodes.Add(node);
+    }
+
+    private async Task LoadRegistryTreeChildrenAsync(TreeNode node)
+    {
+        if (!EnsureConnected() || node.Tag is not string path) return;
+        if (node.Nodes.Count > 0 && node.Nodes.Cast<TreeNode>().All(x => x.Tag is string)) return;
+        try
+        {
+            var rows = await _remote.ExecuteJsonListAsync<RegistryTreeNodeRow>($@"
+Get-ChildItem -LiteralPath '{PsQuote(path)}' -ErrorAction Stop | Sort-Object PSChildName | ForEach-Object {{
+ [pscustomobject]@{{Name=$_.PSChildName;Path=$_.PSPath}}
+}}
+");
+            node.Nodes.Clear();
+            foreach (var row in rows)
+            {
+                var child = new TreeNode(row.Name) { Tag = row.Path };
+                child.Nodes.Add(new TreeNode("Загрузка...") { Tag = null });
+                node.Nodes.Add(child);
+            }
+        }
+        catch (Exception ex)
+        {
+            node.Nodes.Clear();
+            node.Nodes.Add(new TreeNode("Недоступно") { ForeColor = Color.Firebrick });
+            WriteAudit("registry.tree", $"{path}: {ex.Message}", false);
+        }
+    }
+
+    private async Task RefreshSelectedRegistryTreeNodeAsync()
+    {
+        if (_registryTree.SelectedNode is not { } node) return;
+        node.Nodes.Clear();
+        node.Nodes.Add(new TreeNode("Загрузка...") { Tag = null });
+        await LoadRegistryTreeChildrenAsync(node);
     }
 
     private TabPage BuildScheduledTasksTab()
@@ -560,9 +645,6 @@ public sealed partial class MainForm
         {
             BindGrid(_registryGrid, await _remote.ExecuteJsonListAsync<RegistryValueRow>($@"
 $key = Get-Item -LiteralPath '{PsQuote(path)}' -ErrorAction Stop
-Get-ChildItem -LiteralPath '{PsQuote(path)}' -ErrorAction SilentlyContinue | Sort-Object PSChildName | ForEach-Object {{
- [pscustomobject]@{{Name=$_.PSChildName;Type='[Key]';Value='';IsKey=$true}}
-}}
 foreach($name in $key.GetValueNames()){{
  try {{
   $kind=$key.GetValueKind($name).ToString()
@@ -581,13 +663,16 @@ foreach($name in $key.GetValueNames()){{
     private async Task CreateRegistryKeyAsync()
     {
         if (!EnsureConnected()) return;
-        var path = _registryPath.Text.Trim();
-        if (string.IsNullOrWhiteSpace(path)) return;
+        var parent = _registryPath.Text.Trim().TrimEnd('\\');
+        if (string.IsNullOrWhiteSpace(parent)) return;
+        var name = PromptText("Создать раздел реестра", "Имя нового раздела:", string.Empty);
+        if (string.IsNullOrWhiteSpace(name)) return;
+        var path = parent + "\\" + name.Trim();
         try
         {
             await _remote.ExecuteTextAsync($"New-Item -Path '{PsQuote(path)}' -Force -ErrorAction Stop | Out-Null");
             WriteAudit("registry.create-key", path, true);
-            await ReadRegistryAsync();
+            await RefreshSelectedRegistryTreeNodeAsync();
         }
         catch (Exception ex) { WriteAudit("registry.create-key", $"{path}: {ex.Message}", false); ShowError(ex); }
     }
@@ -907,6 +992,12 @@ foreach($u in $result.Updates){
             RefreshAuditGrid();
         }
         catch (Exception ex) { ShowError(ex); }
+    }
+
+    private sealed class RegistryTreeNodeRow
+    {
+        public string Name { get; set; } = "";
+        public string Path { get; set; } = "";
     }
 
     private sealed class RegistryValueRow

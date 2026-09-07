@@ -78,6 +78,7 @@ public sealed class EventRow
 {
     public DateTime? TimeCreated { get; set; }
     public int Id { get; set; }
+    public int LevelValue { get; set; }
     public string Level { get; set; } = "";
     public string Provider { get; set; } = "";
     public string Message { get; set; } = "";

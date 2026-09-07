@@ -12,6 +12,14 @@ namespace DomainAdminConsole;
 
 public sealed partial class MainForm : Form
 {
+    private static readonly ToolTip SharedButtonToolTip = new()
+    {
+        AutoPopDelay = 8000,
+        InitialDelay = 350,
+        ReshowDelay = 100,
+        ShowAlways = true
+    };
+
     private readonly DomainService _domain = new();
     private readonly RemotePowerShellService _remote = new();
     private readonly GitHubUpdateService _updates = new();
@@ -45,14 +53,23 @@ public sealed partial class MainForm : Form
         Dock = DockStyle.Fill,
         HideHeaders = true
     };
-    private readonly FlowLayoutPanel _tabHeaderFlow = new()
+    private readonly Panel _tabHeaderViewport = new()
     {
         Dock = DockStyle.Fill,
+        Margin = new Padding(0),
+        Padding = new Padding(0),
+        BackColor = SystemColors.Control
+    };
+    private readonly FlowLayoutPanel _tabHeaderFlow = new()
+    {
+        AutoSize = true,
+        AutoSizeMode = AutoSizeMode.GrowAndShrink,
         FlowDirection = FlowDirection.LeftToRight,
         WrapContents = false,
         AutoScroll = false,
         Margin = new Padding(0),
-        Padding = new Padding(0)
+        Padding = new Padding(0),
+        BackColor = SystemColors.Control
     };
     private readonly Button _tabScrollLeft = new()
     {
@@ -64,8 +81,8 @@ public sealed partial class MainForm : Form
         Text = "▶", Width = 30, Height = 28, TabStop = false, FlatStyle = FlatStyle.System,
         Margin = new Padding(0), AccessibleName = "Прокрутить вкладки вправо"
     };
-    private int _firstVisibleTabIndex;
-    private int _lastVisibleTabIndex = -1;
+    private int _tabScrollOffset;
+    private int _tabHeaderContentWidth;
     private readonly ToolStripMenuItem _favoritesMenu = new("Избранное");
     private readonly DataGridView _diskGrid = Grid();
     private readonly RichTextBox _systemInfo = new()
@@ -103,7 +120,7 @@ public sealed partial class MainForm : Form
 
     public MainForm()
     {
-        Text = "Domain Admin Console 0.3.9 — BasiliyWolf";
+        Text = "Domain Admin Console 0.4.1 — BasiliyWolf";
         Width = 1500;
         Height = 900;
         WindowState = FormWindowState.Maximized;
@@ -232,31 +249,29 @@ public sealed partial class MainForm : Form
         host.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 32));
         host.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         host.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 32));
-        host.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+        host.RowStyles.Add(new RowStyle(SizeType.Absolute, 31));
         host.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
+        ConfigureTabScrollButton(_tabScrollLeft);
+        ConfigureTabScrollButton(_tabScrollRight);
         _tabScrollLeft.Dock = DockStyle.Fill;
         _tabScrollRight.Dock = DockStyle.Fill;
         _tabScrollLeft.Click += (_, _) => ScrollTabHeaders(-1);
         _tabScrollRight.Click += (_, _) => ScrollTabHeaders(+1);
 
-        _tabHeaderFlow.BackColor = SystemColors.Control;
-        _tabHeaderFlow.SizeChanged += (_, _) => RebuildTabHeaderStrip();
+        _tabHeaderViewport.Controls.Add(_tabHeaderFlow);
+        _tabHeaderViewport.SizeChanged += (_, _) => ApplyTabHeaderScrollOffset();
 
         host.Controls.Add(_tabScrollLeft, 0, 0);
-        host.Controls.Add(_tabHeaderFlow, 1, 0);
+        host.Controls.Add(_tabHeaderViewport, 1, 0);
         host.Controls.Add(_tabScrollRight, 2, 0);
         host.Controls.Add(_tabs, 0, 1);
         host.SetColumnSpan(_tabs, 3);
 
         var center = new TableLayoutPanel
         {
-            Dock = DockStyle.Fill,
-            ColumnCount = 3,
-            RowCount = 3,
-            BackColor = Color.FromArgb(245, 247, 250),
-            Margin = new Padding(0),
-            Padding = new Padding(0)
+            Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 3,
+            BackColor = Color.FromArgb(245, 247, 250), Margin = new Padding(0), Padding = new Padding(0)
         };
         center.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         center.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -281,80 +296,99 @@ public sealed partial class MainForm : Form
         return host;
     }
 
+    private static void ConfigureTabScrollButton(Button button)
+    {
+        button.FlatStyle = FlatStyle.System;
+        button.Margin = new Padding(0);
+        button.Padding = new Padding(0);
+        button.Font = new Font(SystemFonts.MessageBoxFont.FontFamily, 10f, FontStyle.Bold);
+    }
+
     private void ScrollTabHeaders(int direction)
     {
-        if (_tabs.TabPages.Count == 0) return;
-        var maxFirst = Math.Max(0, _tabs.TabPages.Count - 1);
-        _firstVisibleTabIndex = Math.Clamp(_firstVisibleTabIndex + direction, 0, maxFirst);
-        RebuildTabHeaderStrip();
+        var step = Math.Max(160, (int)(_tabHeaderViewport.ClientSize.Width * 0.55));
+        _tabScrollOffset += direction * step;
+        ApplyTabHeaderScrollOffset();
     }
 
     private void EnsureSelectedTabHeaderVisible()
     {
-        var selected = _tabs.SelectedIndex;
-        if (selected < 0) return;
-        if (selected < _firstVisibleTabIndex || selected > _lastVisibleTabIndex)
-            _firstVisibleTabIndex = selected;
-        RebuildTabHeaderStrip();
+        UpdateTabHeaderSelectionStyles();
+        if (_tabs.SelectedTab is null || _tabHeaderViewport.ClientSize.Width <= 0) return;
+        var button = _tabHeaderFlow.Controls.OfType<Button>()
+            .FirstOrDefault(x => ReferenceEquals(x.Tag, _tabs.SelectedTab));
+        if (button is null) return;
+
+        var left = button.Left;
+        var right = button.Right;
+        var viewportWidth = _tabHeaderViewport.ClientSize.Width;
+        if (left < _tabScrollOffset)
+            _tabScrollOffset = left;
+        else if (right > _tabScrollOffset + viewportWidth)
+            _tabScrollOffset = right - viewportWidth;
+
+        ApplyTabHeaderScrollOffset();
+    }
+
+    private void UpdateTabHeaderSelectionStyles()
+    {
+        foreach (var button in _tabHeaderFlow.Controls.OfType<Button>())
+        {
+            var selected = ReferenceEquals(button.Tag, _tabs.SelectedTab);
+            button.BackColor = selected ? SystemColors.Window : SystemColors.Control;
+            button.FlatAppearance.BorderColor = selected ? Color.FromArgb(0, 120, 215) : SystemColors.ControlDark;
+        }
     }
 
     private void RebuildTabHeaderStrip()
     {
         if (_tabHeaderFlow.IsDisposed || _tabs.TabPages.Count == 0) return;
-
         _tabHeaderFlow.SuspendLayout();
         try
         {
             foreach (Control oldButton in _tabHeaderFlow.Controls.Cast<Control>().ToArray())
                 oldButton.Dispose();
             _tabHeaderFlow.Controls.Clear();
-            var available = Math.Max(120, _tabHeaderFlow.ClientSize.Width - 2);
-            var used = 0;
-            var last = _firstVisibleTabIndex - 1;
 
-            for (var i = _firstVisibleTabIndex; i < _tabs.TabPages.Count; i++)
+            foreach (TabPage page in _tabs.TabPages)
             {
-                var page = _tabs.TabPages[i];
-                var measured = TextRenderer.MeasureText(page.Text, Font).Width + 24;
-                var width = Math.Clamp(measured, 72, 190);
-                if (used > 0 && used + width > available) break;
-
+                var measured = TextRenderer.MeasureText(page.Text, Font).Width + 28;
+                var width = Math.Clamp(measured, 78, 200);
                 var tabButton = new Button
                 {
-                    Text = page.Text,
-                    Width = width,
-                    Height = 29,
-                    Margin = new Padding(0),
-                    Padding = new Padding(6, 0, 6, 0),
-                    FlatStyle = FlatStyle.Flat,
-                    TabStop = false,
-                    TextAlign = ContentAlignment.MiddleCenter,
+                    Text = page.Text, Width = width, Height = 30,
+                    Margin = new Padding(0), Padding = new Padding(8, 0, 8, 0),
+                    FlatStyle = FlatStyle.Flat, TabStop = false, TextAlign = ContentAlignment.MiddleCenter,
                     BackColor = ReferenceEquals(page, _tabs.SelectedTab) ? SystemColors.Window : SystemColors.Control,
-                    ForeColor = SystemColors.ControlText,
-                    Tag = page
+                    ForeColor = SystemColors.ControlText, Tag = page
                 };
                 tabButton.FlatAppearance.BorderSize = 1;
                 tabButton.FlatAppearance.BorderColor = ReferenceEquals(page, _tabs.SelectedTab)
-                    ? Color.FromArgb(0, 120, 215)
-                    : SystemColors.ControlDark;
-                tabButton.Click += (_, _) =>
-                {
-                    _tabs.SelectedTab = page;
-                    _tabs.Focus();
-                };
+                    ? Color.FromArgb(0, 120, 215) : SystemColors.ControlDark;
+                tabButton.Click += (_, _) => { _tabs.SelectedTab = page; _tabs.Focus(); };
                 _tabHeaderFlow.Controls.Add(tabButton);
-                used += width;
-                last = i;
             }
-
-            _lastVisibleTabIndex = last;
-            _tabScrollLeft.Enabled = _firstVisibleTabIndex > 0;
-            _tabScrollRight.Enabled = _lastVisibleTabIndex >= 0 && _lastVisibleTabIndex < _tabs.TabPages.Count - 1;
         }
         finally
         {
-            _tabHeaderFlow.ResumeLayout();
+            _tabHeaderFlow.ResumeLayout(true);
         }
+
+        _tabHeaderContentWidth = _tabHeaderFlow.PreferredSize.Width;
+        if (_tabHeaderFlow.Height < 30) _tabHeaderFlow.Height = 30;
+        ApplyTabHeaderScrollOffset();
+    }
+
+    private void ApplyTabHeaderScrollOffset()
+    {
+        if (_tabHeaderViewport.IsDisposed || _tabHeaderFlow.IsDisposed) return;
+        var viewportWidth = Math.Max(0, _tabHeaderViewport.ClientSize.Width);
+        _tabHeaderContentWidth = Math.Max(_tabHeaderFlow.PreferredSize.Width, _tabHeaderContentWidth);
+        var maxOffset = Math.Max(0, _tabHeaderContentWidth - viewportWidth);
+        _tabScrollOffset = Math.Clamp(_tabScrollOffset, 0, maxOffset);
+        _tabHeaderFlow.Location = new Point(-_tabScrollOffset, 0);
+        _tabScrollLeft.Enabled = _tabScrollOffset > 0;
+        _tabScrollRight.Enabled = _tabScrollOffset < maxOffset;
     }
 
     private void ConfigureMainMenu()
@@ -536,6 +570,15 @@ public sealed partial class MainForm : Form
         if (_tabs.TabPages.Count == 0) return;
         var next = (_tabs.SelectedIndex + direction + _tabs.TabPages.Count) % _tabs.TabPages.Count;
         _tabs.SelectedIndex = next;
+        _tabs.Focus();
+    }
+
+    private void SelectTabByText(string text)
+    {
+        var page = _tabs.TabPages.Cast<TabPage>()
+            .FirstOrDefault(x => string.Equals(x.Text, text, StringComparison.OrdinalIgnoreCase));
+        if (page is null) return;
+        _tabs.SelectedTab = page;
         _tabs.Focus();
     }
 
@@ -830,6 +873,13 @@ public sealed partial class MainForm : Form
         bar.Controls.Add(count);
         bar.Controls.Add(Button("Обновить", async (_, _) => await RefreshEventsAsync(log.Text, (int)count.Value)));
         MirrorToolbarToGridContextMenu(_eventGrid, bar);
+        _eventGrid.CellDoubleClick += (_, e) => ShowEventDetails(e.RowIndex);
+        _eventGrid.DataBindingComplete += (_, _) => ApplyEventGridColorCoding();
+        _eventGrid.Sorted += (_, _) => ApplyEventGridColorCoding();
+        var detailsItem = new ToolStripMenuItem("Подробности события", UiIconFactory.Get(UiIconKind.Info, 16));
+        detailsItem.Click += (_, _) => ShowEventDetails(_eventGrid.CurrentRow?.Index ?? -1);
+        _eventGrid.ContextMenuStrip?.Items.Insert(0, detailsItem);
+        _eventGrid.ContextMenuStrip?.Items.Insert(1, new ToolStripSeparator());
         tab.Controls.Add(_eventGrid);
         tab.Controls.Add(bar);
         return tab;
@@ -912,95 +962,142 @@ public sealed partial class MainForm : Form
 
     private TabPage BuildUtilitiesTab()
     {
-        var tab = new TabPage("Утилиты") { Padding = new Padding(10), BackColor = SystemColors.Control };
+        var tab = new TabPage("Утилиты") { Padding = new Padding(12), BackColor = SystemColors.Control };
         var root = new TableLayoutPanel
         {
-            Dock = DockStyle.Fill,
-            ColumnCount = 2,
-            RowCount = 3,
-            Padding = new Padding(0),
-            Margin = new Padding(0)
+            Dock = DockStyle.Fill, AutoScroll = true, BackColor = SystemColors.Control,
+            ColumnCount = 1, RowCount = 3, Margin = new Padding(0), Padding = new Padding(0)
         };
-        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 48));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 32));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 92));
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 250));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 86));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
-        var consoles = CreateUtilityGroup("Подключение и оснастки",
-            Button("RDP", (_, _) => LaunchLocal("mstsc.exe", $"/v:{CurrentHost}"), 170, 38),
-            Button("Открыть C$", (_, _) => LaunchLocal("explorer.exe", $@"\\{CurrentHost}\c$"), 170, 38),
-            Button("Computer Management", (_, _) => LaunchLocal("compmgmt.msc", $"/computer={CurrentHost}"), 170, 38),
-            Button("Event Viewer", (_, _) => LaunchLocal("eventvwr.msc", $"/computer={CurrentHost}"), 170, 38));
+        var groups = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top, Height = 250, ColumnCount = 3, RowCount = 1,
+            Padding = new Padding(0), Margin = new Padding(0)
+        };
+        for (var i = 0; i < 3; i++) groups.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.333f));
 
-        var system = CreateUtilityGroup("Система",
-            Button("Системная информация", async (_, _) => await ShowSystemInformationAsync(), 190, 38),
-            Button("Перезагрузить ПК", async (_, _) => await RestartRemoteAsync(), 190, 38),
-            Button("GPUpdate /force", async (_, _) => await RunNativeUtilityAsync("gpupdate.exe", "/force", "gpupdate /force"), 190, 38),
-            Button("Обновить политики + DNS", async (_, _) => await RefreshPoliciesAndDnsAsync(), 190, 38));
+        groups.Controls.Add(CreateCompactUtilityGroup("Подключение и оснастки",
+            Button("RDP", (_, _) => LaunchLocal("mstsc.exe", $"/v:{CurrentHost}"), 210, 34),
+            Button("Открыть C$", (_, _) => LaunchLocal("explorer.exe", $@"\\{CurrentHost}\c$"), 210, 34),
+            Button("Computer Management", (_, _) => LaunchLocal("compmgmt.msc", $"/computer={CurrentHost}"), 210, 34),
+            Button("Event Viewer", (_, _) => LaunchLocal("eventvwr.msc", $"/computer={CurrentHost}"), 210, 34)), 0, 0);
 
-        var network = CreateUtilityGroup("Сеть",
-            Button("Flush DNS", async (_, _) => await RunNativeUtilityAsync("ipconfig.exe", "/flushdns", "ipconfig /flushdns"), 170, 38),
-            Button("IPConfig /all", async (_, _) => await RunNativeUtilityAsync("ipconfig.exe", "/all", "ipconfig /all"), 170, 38));
-        root.Controls.Add(consoles, 0, 0);
-        root.Controls.Add(system, 1, 0);
-        root.Controls.Add(network, 0, 1);
-        root.SetColumnSpan(network, 2);
+        groups.Controls.Add(CreateCompactUtilityGroup("Система",
+            Button("Системная информация", async (_, _) => await ShowSystemInformationAsync(), 210, 34),
+            Button("Перезагрузить ПК", async (_, _) => await RestartRemoteAsync(), 210, 34),
+            Button("GPUpdate /force", async (_, _) => await RunNativeUtilityAsync("gpupdate.exe", "/force", "gpupdate /force"), 210, 34),
+            Button("Политики + DNS", async (_, _) => await RefreshPoliciesAndDnsAsync(), 210, 34)), 1, 0);
+
+        groups.Controls.Add(CreateCompactUtilityGroup("Сеть",
+            Button("Flush DNS", async (_, _) => await RunNativeUtilityAsync("ipconfig.exe", "/flushdns", "ipconfig /flushdns"), 210, 34),
+            Button("IPConfig /all", async (_, _) => await RunNativeUtilityAsync("ipconfig.exe", "/all", "ipconfig /all"), 210, 34),
+            Button("Ping / Tracert", (_, _) => SelectTabByText("Ping / Tracert"), 210, 34),
+            Button("Сетевые интерфейсы", (_, _) => SelectTabByText("Сеть ПК"), 210, 34)), 2, 0);
 
         var messageGroup = new GroupBox
         {
-            Text = "Сообщение активному пользователю",
-            Dock = DockStyle.Fill,
-            Margin = new Padding(4),
-            Padding = new Padding(10)
+            Text = "Сообщение активному пользователю", Dock = DockStyle.Top, Height = 86,
+            Margin = new Padding(0, 10, 0, 0), Padding = new Padding(10)
         };
         var messageLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = new Padding(0), Padding = new Padding(0) };
         messageLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        messageLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 190));
-        var messageBox = new TextBox { Dock = DockStyle.Fill, PlaceholderText = "Текст сообщения", Margin = new Padding(0, 5, 8, 5) };
-        var send = Button("Отправить сообщение", async (_, _) => await SendMessageAsync(messageBox.Text), 180, 34);
+        messageLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 210));
+        var messageBox = new TextBox { Dock = DockStyle.Fill, PlaceholderText = "Текст сообщения", Margin = new Padding(0, 6, 10, 6) };
+        var send = Button("Отправить сообщение", async (_, _) => await SendMessageAsync(messageBox.Text), 200, 34);
         send.Dock = DockStyle.Fill;
-        send.Margin = new Padding(0, 2, 0, 2);
+        send.Margin = new Padding(0, 3, 0, 3);
         messageLayout.Controls.Add(messageBox, 0, 0);
         messageLayout.Controls.Add(send, 1, 0);
         messageGroup.Controls.Add(messageLayout);
-        root.Controls.Add(messageGroup, 0, 2);
-        root.SetColumnSpan(messageGroup, 2);
 
+        root.Controls.Add(groups, 0, 0);
+        root.Controls.Add(messageGroup, 0, 1);
         tab.Controls.Add(root);
         return tab;
     }
 
-    private static Control CreateUtilityGroup(string title, params Button[] buttons)
+    private static Control CreateCompactUtilityGroup(string title, params Button[] buttons)
     {
         var group = new GroupBox
         {
-            Text = title,
-            Dock = DockStyle.Fill,
-            Margin = new Padding(4),
-            Padding = new Padding(10)
+            Text = title, Dock = DockStyle.Fill, Margin = new Padding(5), Padding = new Padding(10)
         };
-        var grid = new TableLayoutPanel
+        var list = new FlowLayoutPanel
         {
-            Dock = DockStyle.Fill,
-            ColumnCount = 2,
-            RowCount = Math.Max(1, (buttons.Length + 1) / 2),
-            Margin = new Padding(0),
-            Padding = new Padding(0)
+            Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false,
+            AutoScroll = true, Margin = new Padding(0), Padding = new Padding(2)
         };
-        grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        for (var r = 0; r < grid.RowCount; r++) grid.RowStyles.Add(new RowStyle(SizeType.Percent, 100f / grid.RowCount));
-
-        for (var i = 0; i < buttons.Length; i++)
+        foreach (var button in buttons)
         {
-            var button = buttons[i];
-            button.Dock = DockStyle.Fill;
+            button.Width = 220;
+            button.Height = 34;
             button.Margin = new Padding(4);
-            grid.Controls.Add(button, i % 2, i / 2);
+            list.Controls.Add(button);
         }
-        group.Controls.Add(grid);
+        group.Controls.Add(list);
         return group;
+    }
+
+    private void ApplyEventGridColorCoding()
+    {
+        foreach (DataGridViewRow gridRow in _eventGrid.Rows)
+        {
+            if (gridRow.DataBoundItem is not EventRow row) continue;
+
+            var level = row.LevelValue;
+            if (level <= 0)
+            {
+                var name = row.Level ?? string.Empty;
+                if (name.Contains("critical", StringComparison.OrdinalIgnoreCase) || name.Contains("крит", StringComparison.OrdinalIgnoreCase)) level = 1;
+                else if (name.Contains("error", StringComparison.OrdinalIgnoreCase) || name.Contains("ошиб", StringComparison.OrdinalIgnoreCase)) level = 2;
+                else if (name.Contains("warning", StringComparison.OrdinalIgnoreCase) || name.Contains("предуп", StringComparison.OrdinalIgnoreCase)) level = 3;
+                else if (name.Contains("information", StringComparison.OrdinalIgnoreCase) || name.Contains("свед", StringComparison.OrdinalIgnoreCase) || name.Contains("информ", StringComparison.OrdinalIgnoreCase)) level = 4;
+                else if (name.Contains("verbose", StringComparison.OrdinalIgnoreCase) || name.Contains("подроб", StringComparison.OrdinalIgnoreCase)) level = 5;
+            }
+
+            var back = level switch
+            {
+                1 => Color.FromArgb(255, 220, 220),
+                2 => Color.FromArgb(255, 235, 235),
+                3 => Color.FromArgb(255, 248, 210),
+                4 => Color.FromArgb(232, 245, 255),
+                5 => Color.FromArgb(242, 242, 242),
+                _ => SystemColors.Window
+            };
+            var fore = level switch
+            {
+                1 => Color.DarkRed,
+                2 => Color.Firebrick,
+                3 => Color.FromArgb(145, 95, 0),
+                4 => Color.FromArgb(0, 80, 140),
+                5 => Color.DimGray,
+                _ => SystemColors.ControlText
+            };
+
+            gridRow.DefaultCellStyle.BackColor = back;
+            gridRow.DefaultCellStyle.ForeColor = SystemColors.ControlText;
+            gridRow.DefaultCellStyle.SelectionBackColor = SystemColors.Highlight;
+            gridRow.DefaultCellStyle.SelectionForeColor = SystemColors.HighlightText;
+
+            if (_eventGrid.Columns[nameof(EventRow.Level)] is { } levelColumn)
+            {
+                var cell = gridRow.Cells[levelColumn.Index];
+                cell.Style.ForeColor = fore;
+                cell.Style.BackColor = back;
+            }
+        }
+    }
+
+    private void ShowEventDetails(int rowIndex)
+    {
+        if (rowIndex < 0 || rowIndex >= _eventGrid.Rows.Count || _eventGrid.Rows[rowIndex].DataBoundItem is not EventRow row) return;
+        using var form = new EventDetailsForm(row);
+        try { form.Icon = Icon; } catch { }
+        form.ShowDialog(this);
     }
 
     private void WireEvents()
@@ -1323,10 +1420,12 @@ Get-CimInstance Win32_Service | Sort-Object DisplayName | ForEach-Object {
         {
             BindGrid(_eventGrid, await _remote.ExecuteJsonListAsync<EventRow>($@"
 Get-WinEvent -LogName '{PsQuote(log)}' -MaxEvents {count} -ErrorAction Stop | ForEach-Object {{
- [pscustomobject]@{{ TimeCreated=$_.TimeCreated.ToString('o'); Id=$_.Id; Level=$_.LevelDisplayName; Provider=$_.ProviderName; Message=$_.Message }}
+ [pscustomobject]@{{ TimeCreated=$_.TimeCreated.ToString('o'); Id=$_.Id; LevelValue=[int]$_.Level; Level=$_.LevelDisplayName; Provider=$_.ProviderName; Message=$_.Message }}
 }}
 "));
+            if (_eventGrid.Columns[nameof(EventRow.LevelValue)] is { } levelValueColumn) levelValueColumn.Visible = false;
             if (_eventGrid.Columns[nameof(EventRow.Message)] is { } col) col.Width = 650;
+            ApplyEventGridColorCoding();
         }
         catch (Exception ex) { ShowError(ex); }
     }
@@ -1944,38 +2043,86 @@ $boot=$os.LastBootUpTime
 
     private static Button Button(string text, EventHandler handler, int width = 100, int height = 30)
     {
-        var measuredWidth = TextRenderer.MeasureText(text, SystemFonts.MessageBoxFont).Width + 42;
+        var measuredWidth = TextRenderer.MeasureText(text, SystemFonts.MessageBoxFont).Width + 48;
         var b = new Button
         {
             Text = text,
+            AccessibleName = text,
             Width = width == 100 ? Math.Max(108, measuredWidth) : width,
             Height = Math.Max(30, height),
             AutoSize = false,
-            Margin = new Padding(3),
-            Padding = new Padding(5, 0, 5, 0),
+            Margin = new Padding(4, 3, 4, 3),
+            Padding = new Padding(7, 0, 7, 0),
             UseVisualStyleBackColor = true,
             TextAlign = ContentAlignment.MiddleCenter,
-            ImageAlign = ContentAlignment.MiddleLeft,
-            TextImageRelation = TextImageRelation.Overlay
+            ImageAlign = ContentAlignment.MiddleCenter,
+            TextImageRelation = TextImageRelation.ImageBeforeText
         };
         b.Click += handler;
         ApplySystemButtonIcon(b);
         return b;
     }
 
+    private static string GetButtonCaption(Button button)
+        => !string.IsNullOrWhiteSpace(button.AccessibleName) ? button.AccessibleName : button.Text;
+
+    private static Image GetPaddedButtonImage(string caption)
+    {
+        using var source = GetSystemActionImage(caption);
+        var bitmap = new Bitmap(source.Width + 6, Math.Max(16, source.Height));
+        bitmap.SetResolution(96, 96);
+        using var graphics = Graphics.FromImage(bitmap);
+        graphics.Clear(Color.Transparent);
+        graphics.DrawImageUnscaled(source, 0, (bitmap.Height - source.Height) / 2);
+        return bitmap;
+    }
+
     private static void ApplySystemButtonIcon(Button button)
     {
         try
         {
+            var caption = GetButtonCaption(button);
+            if (string.IsNullOrWhiteSpace(button.AccessibleName)) button.AccessibleName = caption;
             button.Image?.Dispose();
-            button.Image = GetSystemActionImage(button.Text);
-            button.ImageAlign = ContentAlignment.MiddleLeft;
+            button.Image = GetPaddedButtonImage(caption);
+            button.ImageAlign = ContentAlignment.MiddleCenter;
             button.TextAlign = ContentAlignment.MiddleCenter;
-            // Overlay keeps the icon pinned to the same left coordinate instead
-            // of shifting together with text of different lengths.
-            button.TextImageRelation = TextImageRelation.Overlay;
+            button.TextImageRelation = TextImageRelation.ImageBeforeText;
+            button.Padding = new Padding(7, 0, 7, 0);
+            button.SizeChanged += (_, _) => UpdateAdaptiveButtonPresentation(button);
+            button.HandleCreated += (_, _) => UpdateAdaptiveButtonPresentation(button);
+            UpdateAdaptiveButtonPresentation(button);
         }
         catch { }
+    }
+
+    private static void UpdateAdaptiveButtonPresentation(Button button)
+    {
+        if (button.IsDisposed) return;
+        var caption = GetButtonCaption(button);
+        if (string.IsNullOrWhiteSpace(caption)) return;
+
+        var textWidth = TextRenderer.MeasureText(caption, button.Font, new Size(int.MaxValue, Math.Max(1, button.Height)),
+            TextFormatFlags.SingleLine | TextFormatFlags.NoPadding).Width;
+        var imageWidth = button.Image?.Width ?? 0;
+        var requiredWidth = textWidth + imageWidth + button.Padding.Horizontal + 12;
+        var compact = button.ClientSize.Width > 0 && button.ClientSize.Width < requiredWidth;
+
+        if (compact)
+        {
+            if (button.Text.Length != 0) button.Text = string.Empty;
+            button.TextImageRelation = TextImageRelation.Overlay;
+            button.ImageAlign = ContentAlignment.MiddleCenter;
+            SharedButtonToolTip.SetToolTip(button, caption);
+        }
+        else
+        {
+            if (!string.Equals(button.Text, caption, StringComparison.Ordinal)) button.Text = caption;
+            button.TextImageRelation = TextImageRelation.ImageBeforeText;
+            button.ImageAlign = ContentAlignment.MiddleCenter;
+            button.TextAlign = ContentAlignment.MiddleCenter;
+            SharedButtonToolTip.SetToolTip(button, string.Empty);
+        }
     }
 
     private static void NormalizeFlowLayoutControls(Control root)
@@ -2008,7 +2155,7 @@ $boot=$os.LastBootUpTime
         }
     }
 
-    private static Image? GetSystemActionImage(string? actionText)
+    private static Image GetSystemActionImage(string? actionText)
     {
         var text = (actionText ?? string.Empty).ToLowerInvariant();
         UiIconKind kind;
@@ -2063,7 +2210,7 @@ $boot=$os.LastBootUpTime
 
     private static void MirrorToolbarToGridContextMenu(DataGridView grid, Control toolbar)
     {
-        var buttons = toolbar.Controls.Cast<Control>().OfType<Button>().Where(b => !string.IsNullOrWhiteSpace(b.Text)).ToList();
+        var buttons = toolbar.Controls.Cast<Control>().OfType<Button>().Where(b => !string.IsNullOrWhiteSpace(GetButtonCaption(b))).ToList();
         if (buttons.Count == 0) return;
 
         var menu = CreateGridContextMenu(grid);
@@ -2071,7 +2218,8 @@ $boot=$os.LastBootUpTime
         var insertIndex = 0;
         foreach (var button in buttons)
         {
-            var item = new ToolStripMenuItem(button.Text, GetSystemActionImage(button.Text));
+            var caption = GetButtonCaption(button);
+            var item = new ToolStripMenuItem(caption, GetSystemActionImage(caption));
             item.Click += (_, _) => button.PerformClick();
             menu.Items.Insert(insertIndex++, item);
             mapped.Add((item, button));
@@ -2087,7 +2235,7 @@ $boot=$os.LastBootUpTime
 
     private static void MirrorAdditionalToolbarButtonsToGridContextMenu(DataGridView grid, Control toolbar)
     {
-        var buttons = toolbar.Controls.Cast<Control>().OfType<Button>().Where(b => !string.IsNullOrWhiteSpace(b.Text)).ToList();
+        var buttons = toolbar.Controls.Cast<Control>().OfType<Button>().Where(b => !string.IsNullOrWhiteSpace(GetButtonCaption(b))).ToList();
         if (buttons.Count == 0) return;
         var menu = grid.ContextMenuStrip ?? CreateGridContextMenu(grid);
         var separatorIndex = menu.Items.Cast<ToolStripItem>().Select((item, index) => (item, index))
@@ -2096,7 +2244,8 @@ $boot=$os.LastBootUpTime
         var mapped = new List<(ToolStripMenuItem Item, Button Button)>();
         foreach (var button in buttons)
         {
-            var item = new ToolStripMenuItem(button.Text, GetSystemActionImage(button.Text));
+            var caption = GetButtonCaption(button);
+            var item = new ToolStripMenuItem(caption, GetSystemActionImage(caption));
             item.Click += (_, _) => button.PerformClick();
             menu.Items.Insert(separatorIndex++, item);
             mapped.Add((item, button));
